@@ -1,0 +1,348 @@
+---
+title: "CensusDataAggregation"
+output: html_notebook
+---
+
+This R notebook gathers demographic information for census block groups in California. It outputs data files containing this aggregated information.
+
+Census data was originally downloaded through American FactFinder's Advanced Search option (https://factfinder.census.gov/faces/nav/jsf/pages/index.xhtml) selecting 2015 as the target year and the appropriate geography. The source is the American Community Survey 5-year estimates.
+
+CalEnviroScreen data used is from CalEnviroScreen 3.0 results.
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(stringr)
+```
+
+
+--------------------------------------------------------------------------------------------
+
+CENSUS BLOCK GROUPS: DEMOGRAPHIC DATA IMPORT
+
+--------------------------------------------------------------------------------------------
+
+The following tables are downloaded via the American FactFinder Download Center:
+ - B01003 - TOTAL POPULATION
+ - B02001 - RACE
+ - B03002 - HISPANIC OR LATINO ORIGIN BY RACE
+ - B03003 - HISPANIC OR LATINO ORIGIN
+ - B15003 - EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER
+ - B19001 - HOUSEHOLD INCOME IN THE PAST 12 MONTHS (IN 2015 INFLATION-ADJUSTED DOLLARS)
+ - B19013 - MEDIAN HOUSEHOLD INCOME IN THE PAST 12 MONTHS (IN 2015 INFLATION-ADJUSTED DOLLARS)
+ - B25003 - TENURE
+ - B25024 - UNITS IN STRUCTURE
+ - B25034 - YEAR STRUCTURE BUILT
+ - B25035 - MEDIAN YEAR STRUCTURE BUILT
+ 
+```{r}
+# B01003 - TOTAL POPULATION
+# loading data, renaming columns, removing extra header row
+ACS_2015_bg_totpop = read.csv("blockgroup/ACS_15_5YR_B01003_with_ann.csv", header=T, skip=1, na.strings="?", colClasses=c("factor","factor","character","numeric","numeric"))
+colnames(ACS_2015_bg_totpop) <- c("GEOid_bg", "GEOID10", "bgcountystate", "totpop", "totpop_err")
+```
+
+```{r}
+# B02001 - RACE, including total population
+ACS_2015_bg_race = read.csv("blockgroup/ACS_15_5YR_B02001_with_ann.csv", header=T, skip=1, na.strings="?", colClasses=c("factor","factor","character",rep("numeric",20)))
+colnames(ACS_2015_bg_race) <- c("GEOid_bg", "GEOID10", "bgcountystate", "totpop", "totpop_err", "white", "white_err", "black", "black_err", "native", "native_err", "asian", "asian_err", "pacific", "pacific_err", "other", "other_err", "two", "two_err", "twoincl", "twoincl_err", "twoexcl", "twoexcl_err")
+# creating new summary columns
+ACS_2015_bg_race <- ACS_2015_bg_race %>%
+  mutate(twoormore = two, #+ twoincl + twoexcl,
+         white_pct = white / totpop,
+         black_pct = black / totpop, 
+         native_pct = native / totpop,
+         asian_pct = asian / totpop,
+         pacific_pct = pacific / totpop,
+         other_pct = other / totpop,
+         twoormore_pct = twoormore / totpop) %>%
+  mutate(racediversity = 1 - (white*(white-1) + black*(black-1) + native*(native-1) + asian*(asian-1) + pacific*(pacific-1) + 
+                                other*(other-1) + twoormore*(twoormore-1))/(totpop*(totpop-1)))
+```
+
+```{r}
+# B03002 - HISPANIC OR LATINO ORIGIN BY RACE
+ACS_2015_bg_latinxrace = read.csv("blockgroup/ACS_15_5YR_B03002_with_ann.csv", header=T, skip=1, na.strings="?", colClasses=c("factor","factor","character",rep("numeric",42)))
+colnames(ACS_2015_bg_latinxrace) <- c("GEOid_bg", "GEOID10", "bgcountystate", "totpop", "totpop_err", "nlx", "nlx_err", "nlxwhite", "nlxw_err", "nlxbblack", "nlxb_err", "nlxnative", "nlxn_err", "nlxasian", "nlxa_err", "nlxpacific", "nlxp_err", "nlxother", "nlxo_err", "nlxtwo", "nlxtwo_err", "nlxtwoincl", "nlxtwoincl_err", "nlxtwoexcl", "nlxtwoexcl_err", "lx", "lx_err", "lxwhite", "lxw_err", "lxbblack", "lxb_err", "lxnative", "lxn_err", "lxasian", "lxa_err", "lxpacific", "lxp_err", "lxother", "lxo_err", "lxtwo", "lxtwo_err", "lxtwoincl", "lxtwoincl_err", "lxtwoexcl", "lxtwoexcl_err")
+# creating new summary columns
+ACS_2015_bg_latinxrace <- ACS_2015_bg_latinxrace %>%
+  mutate(nlxtwoormore = nlxtwo + nlxtwoincl + nlxtwoexcl,
+         lxtwoormore = lxtwo + lxtwoincl + lxtwoexcl,
+         nlxwhite_pct = nlxwhite / totpop)
+```
+
+
+```{r}
+# B03003 - HISPANIC OR LATINO ORIGIN
+ACS_2015_bg_latinx = read.csv("blockgroup/ACS_15_5YR_B03003_with_ann.csv", header=T, skip=1, na.strings="?", colClasses=c("factor","factor","character",rep("numeric",6)))
+colnames(ACS_2015_bg_latinx) <- c("GEOid_bg", "GEOID10", "bgcountystate", "totpop", "totpop_err", "notlatinx", "notlatinx_err", "latinx", "latinx_err")
+# creating new summary columns
+ACS_2015_bg_latinx <- ACS_2015_bg_latinx %>%
+  mutate(notlatinx_pct = notlatinx / totpop,
+         latinx_pct = latinx / totpop)
+```
+
+
+```{r}
+# B15003 - EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER
+# includes total population, but with different (lower) numbers than tot pop or race
+ACS_2015_bg_educ = read.csv("blockgroup/ACS_15_5YR_B15003_with_ann.csv", header=T, skip=1, na.strings="?", colClasses=c("factor","factor","character",rep("numeric",50)))
+colnames(ACS_2015_bg_educ) <- c("GEOid_bg", "GEOID10", "bgcountystate", "totpop", "totpop_err", "none", "none_err", "nursery", "nursery_err", "kindergarten", "kindergarten_err", "grd01", "grd01_err", "grd02", "grd02_err", "grd03", "grd03_err", "grd04", "grd04_err", "grd05", "grd05_err", "grd06", "grd06_err", "grd07", "grd07_err", "grd08", "grd08_err", "grd09", "grd09_err", "grd10", "grd10_err", "grd11", "grd11_err", "grd12nodip", "grd12nodip_err", "hsdip", "hsdip_err", "GED", "GED_err", "somecol1", "somecol1_err", "somecol1plsnodeg", "somecol1plsnodeg_err", "associate", "associate_err", "bachelor", "bachelor_err", "master", "master_err", "prof", "prof_err", "phd", "phd_err")
+# creating some new summary columns and percentages
+ACS_2015_bg_educ <- ACS_2015_bg_educ %>%
+  mutate(presch = none + nursery + kindergarten,
+         elem = grd01 + grd02 + grd03 + grd04 + grd05,
+         mids = grd06 + grd07 + grd08,
+         somehs = grd09 + grd10 + grd11 + grd12nodip,
+         hsfin = hsdip + GED,
+         somecol = somecol1 + somecol1plsnodeg,
+         grad = master + prof + phd) %>% 
+  mutate(presch_pct = presch / totpop,
+         elem_pct = elem / totpop,
+         mids_pct = mids / totpop,
+         somehs_pct = somehs / totpop,
+         hsnofin_pct = (presch + elem + mids + somehs) / totpop,
+         hsfin_pct = hsfin / totpop,
+         somecol_pct = somecol / totpop,
+         associate_pct = associate / totpop,
+         bachelor_pct = bachelor / totpop,
+         grad_pct = grad / totpop) %>%
+  mutate(edavgyrs = (presch*0 + grd01*1 + grd02*2 + grd03*3 + grd04*4 + grd05*5 + grd06*6 + grd07*7 + grd08*8 + 
+                 grd09*9 + grd10*10 + grd11*11 + grd12nodip*11 + hsfin*12 + somecol*14 + associate*14 + bachelor*16 + 
+                 master*18 + prof*20 + phd*22)/totpop)
+```
+
+```{r}
+# B19001 - HOUSEHOLD INCOME IN THE PAST 12 MONTHS (IN 2015 INFLATION-ADJUSTED DOLLARS), including number of households
+ACS_2015_bg_hhinc = read.csv("blockgroup/ACS_15_5YR_B19001_with_ann.csv", header=T, skip=1, na.strings="?", colClasses=c("factor","character","character",rep("numeric",34)))
+colnames(ACS_2015_bg_hhinc) <- c("GEOid_bg", "GEOID10", "bgcountystate", "tothh", "tothh_err", "lessthan10k", "lessthan10k_err", "inc10to15k", "inc10to15k_err", "inc15to20k", "inc15to20k_err", "inc20to25k", "inc20to25k_err", "inc25to30k", "inc25to30k_err", "inc30to35k", "inc30to35k_err", "inc35to40k", "inc35to40k_err", "inc40to45k", "inc40to45k_err", "inc45to50k", "inc45to50k_err", "inc50to60k", "inc50to60k_err", "inc60to75k", "inc60to75k_err", "inc75to100k", "inc75to100k_err", "inc100to125k", "inc100to125k_err", "inc125to150k", "inc125to150k_err", "inc150to200k", "inc150to200k_err", "inc200kplus", "inc200kplus_err")
+# new column for census tract ID, since this data is the starting point for the full dataset
+ACS_2015_bg_hhinc$GEOIDCT <- str_sub(ACS_2015_bg_hhinc$GEOID10, 1, -2)
+# creating some new summary columns
+ACS_2015_bg_hhinc <- ACS_2015_bg_hhinc %>%
+  mutate(inc25kbelow = lessthan10k + inc10to15k + inc15to20k + inc20to25k,
+         inc25to50k = inc25to30k + inc30to35k + inc35to40k + inc40to45k + inc45to50k,
+         inc50to75k = inc50to60k + inc60to75k,
+         inc100to150k = inc100to125k + inc125to150k,
+         inc50kbelow = inc25kbelow + inc25to50k,
+         inc50to100k = inc50to75k + inc75to100k,
+         inc100to200k = inc100to150k + inc150to200k) %>%
+  mutate(inc25kbelow_pct = inc25kbelow / tothh,
+         inc25to50k_pct = inc25to50k / tothh,
+         inc50to75k_pct = inc50to75k / tothh,
+         inc75to100k_pct = inc75to100k / tothh,
+         inc100to150k_pct = inc100to150k / tothh,
+         inc150to200k_pct = inc150to200k / tothh,
+         inc50kbelow_pct = inc50kbelow / tothh,
+         inc50to100k_pct = inc50to100k / tothh,
+         inc100to200k_pct = inc100to200k / tothh,
+         inc200kplus_pct = inc200kplus / tothh,
+         inc150kplus_pct = (inc150to200k + inc200kplus) / tothh)
+```
+
+```{r}
+# B19013 - MEDIAN HOUSEHOLD INCOME IN THE PAST 12 MONTHS (IN 2015 INFLATION-ADJUSTED DOLLARS)
+ACS_2015_bg_medhhinc = read.csv("blockgroup/ACS_15_5YR_B19013_with_ann.csv", header=T, skip=1, na.strings="?")
+colnames(ACS_2015_bg_medhhinc) <- c("GEOid_bg", "GEOID10", "bgcountystate", "medhhinc", "medhhinc_err")
+ACS_2015_bg_medhhinc$GEOID10 <- str_pad(ACS_2015_bg_medhhinc$GEOID10, width=12, side="left", pad="0")
+ACS_2015_bg_medhhinc$GEOID10 <- as.factor(ACS_2015_bg_medhhinc$GEOID10)
+ACS_2015_bg_medhhinc$bgcountystate <- as.character(ACS_2015_bg_medhhinc$bgcountystate)
+ACS_2015_bg_medhhinc$medhhinc <- gsub("-","",ACS_2015_bg_medhhinc$medhhinc)
+ACS_2015_bg_medhhinc$medhhinc <- as.numeric(ACS_2015_bg_medhhinc$medhhinc)
+```
+
+```{r}
+# B25003 - TENURE, including number of households
+ACS_2015_bg_tenure = read.csv("blockgroup/ACS_15_5YR_B25003_with_ann.csv", header=T, skip=1, na.strings="?", colClasses=c("factor","factor","character",rep("numeric",6)))
+colnames(ACS_2015_bg_tenure) <- c("GEOid_bg", "GEOID10", "bgcountystate", "tothh", "tothh_err", "ownerocc", "ownerocc_err", "renterocc", "renterocc_err")
+# percentages
+ACS_2015_bg_tenure <- ACS_2015_bg_tenure %>%
+  mutate(ownerocc_pct = ownerocc / tothh,
+         renterocc_pct = renterocc / tothh)
+```
+
+```{r}
+# B25024 - UNITS IN STRUCTURE, including number of structures
+ACS_2015_bg_units = read.csv("blockgroup/ACS_15_5YR_B25024_with_ann.csv", header=T, skip=1, na.strings="?", colClasses=c("factor","factor","character",rep("numeric",22)))
+colnames(ACS_2015_bg_units) <- c("GEOid_bg", "GEOID10", "bgcountystate", "totstr", "totstr_err", "units1det", "units1det_err", "units1att", "units1att_err", "units2", "units2_err", "units3to4", "units3to4_err", "units5to9", "units5to9_err", "units10to19", "units10to19_err", "units20to49", "units20to49_err", "units50plus", "units50plus_err", "mobilehome", "mobilehome_err", "boatrvvan", "boatrvvan_err")
+# creating some new summary columns
+ACS_2015_bg_units <- ACS_2015_bg_units %>%
+  mutate(singleunit = units1att + units1det,
+         duplex = units2,
+         smallmulti = units3to4 + units5to9 + units10to19,
+         largemulti = units20to49 + units50plus) %>%
+  mutate(singleunit_pct = singleunit / totstr,
+         duplex_pct = duplex / totstr,
+         smallmulti_pct = smallmulti / totstr,
+         largemulti_pct = largemulti / totstr) %>%
+  mutate(unitsavg = (singleunit*1 + duplex*2 + units3to4*3.5 + units5to9*7 + units10to19*14.5 + units20to49*34.5 + units50plus*50) / totstr)
+```
+
+```{r}
+# B25034 - YEAR STRUCTURE BUILT, including number of structures
+ACS_2015_bg_yrbuilt = read.csv("blockgroup/ACS_15_5YR_B25034_with_ann.csv", header=T, skip=1, na.strings="?", colClasses=c("factor","factor","character",rep("numeric",22)))
+colnames(ACS_2015_bg_yrbuilt) <- c("GEOid_bg", "GEOID10", "bgcountystate", "totstr", "totstr_err", "yr2014plus", "yr2014plus_err", "yr2010to2013", "yr2010to2013_err", "yr2000to2009", "yr2000to2009_err", "yr1990to1999", "yr1990to1999_err", "yr1980to1989", "yr1980to1989_err", "yr1970to1979", "yr1970to1979_err", "yr1960to1969", "yr1960to1969_err", "yr1950to1959", "yr1950to1959_err", "yr1940to1949", "yr1940to1949_err", "yr1939pre", "yr1939pre_err")
+# creating some new summary columns
+ACS_2015_bg_yrbuilt <- ACS_2015_bg_yrbuilt %>%
+  mutate(yr2000post = yr2014plus + yr2010to2013 + yr2000to2009,
+         yr1980to1999 = yr1990to1999 + yr1980to1989,
+         yr1960to1979 = yr1970to1979 + yr1960to1969,
+         yr1959pre = yr1950to1959 + yr1940to1949 + yr1939pre) %>%
+  mutate(yr2000post_pct = yr2000post / totstr,
+         yr1980to1999_pct = yr1980to1999 / totstr,
+         yr1960to1979_pct = yr1960to1979 / totstr,
+         yr1959pre_pct = yr1959pre / totstr)
+```
+
+```{r}
+# B25035 - MEDIAN YEAR STRUCTURE BUILT
+ACS_2015_bg_medyrbuilt = read.csv("blockgroup/ACS_15_5YR_B25035_with_ann.csv", header=T, skip=1, na.strings="?")
+colnames(ACS_2015_bg_medyrbuilt) <- c("GEOid_bg", "GEOID10", "bgcountystate", "medyrbuilt", "medyrbuilt_err")
+ACS_2015_bg_medyrbuilt <- ACS_2015_bg_medyrbuilt %>%
+  mutate(GEOID10 = as.factor(str_pad(GEOID10, width=12, side="left", pad="0")),
+         bgcountystate = as.character(bgcountystate),
+         medyrbuilt = as.numeric(gsub("-","",medyrbuilt)))
+```
+
+--------------------------------------------------------------------------------------------
+
+CENSUS BLOCK GROUPS: AGGREGATING CENSUS DATA
+
+--------------------------------------------------------------------------------------------
+
+```{r}
+geomatch = c("GEOid_bg", "GEOID10", "bgcountystate")
+
+bg_demo <- ACS_2015_bg_hhinc[ , c(geomatch, "GEOIDCT", "tothh", "inc50kbelow_pct", "inc150kplus_pct")]
+
+bg_demo <- bg_demo %>% # HOUSEHOLD-LEVEL METRICS, tothh from income data
+  merge(ACS_2015_bg_medhhinc[, c(geomatch, "medhhinc")], by=geomatch, all.x=TRUE) %>% # median household income
+  merge(ACS_2015_bg_tenure[, c(geomatch, "ownerocc_pct", "renterocc_pct")], by=geomatch, all.x=TRUE) %>% # tenure
+  merge(ACS_2015_bg_race[, c(geomatch, "totpop", "racediversity", "black_pct", "asian_pct")],
+        by=geomatch, all.x=TRUE) %>% # POPULATION-LEVEL METRICS, totpop from race data
+  merge(ACS_2015_bg_latinxrace[, c(geomatch, "nlxwhite_pct")], by=geomatch, all.x=TRUE) %>% # non-hispanic white
+  merge(ACS_2015_bg_latinx[, c(geomatch, "notlatinx_pct", "latinx_pct")], by=geomatch, all.x=TRUE) %>% # latinx
+  merge(ACS_2015_bg_educ[, c(geomatch, "edavgyrs")], by=geomatch, all.x=TRUE) %>% # education
+  merge(ACS_2015_bg_units[, c(geomatch, "totstr", "singleunit_pct", "unitsavg")], 
+        by=geomatch, all.x=TRUE) %>% # STRUCTURE-LEVEL METRICS, totstr from unit data
+  merge(ACS_2015_bg_yrbuilt[, c(geomatch, "yr2000post_pct", "yr1980to1999_pct", "yr1960to1979_pct", "yr1959pre_pct")], 
+        by=geomatch, all.x=TRUE) %>% # years built
+  merge(ACS_2015_bg_medyrbuilt[, c(geomatch, "medyrbuilt")], by=geomatch, all.x=TRUE) # median year built
+```
+
+```{r}
+rm(list=ls(pattern="ACS_2015_bg"))
+```
+
+--------------------------------------------------------------------------------------------
+
+CENSUS TRACTS: CALENVIROSCREEN
+
+--------------------------------------------------------------------------------------------
+
+```{r}
+# read in CalEnviroScreen 3.0 results from xlsx file
+# while importing, convert Census Tract GEOID to characters to match with block group ID
+CES3results = read_excel("CalEnviroScreen/ces3results.xlsx", sheet=1, na="NA", col_types=c("text","numeric",rep("guess",55)))
+#colnames(CES3results)[colnames(CES3results)=="Census Tract"] <- "GEOIDCT"
+colnames(CES3results) <- c("GEOIDCT", "totpop", "county", "zip_ct", "nearbycity", "longitude", "latitude", "ces3_sc", "ces3_pctl", "ces3_pctlrng", "sb535disad", "ozone", "ozone_pctl", "pm25", "pm25_pctl", "dieselpm", "dieselpm_pctl", "drinkingwtr", "drinkingwtr_pctl", "pesticides", "pesticides_pctl", "toxrelease", "toxrelease_pctl", "traffic", "traffic_pctl", "cleanupsites", "cleanupsites_pctl", "grndwtrthreats", "grndwtrthreats_pctl", "hazwaste", "hazwaste_pctl", "impwtrbodies", "impwtrbodies_pctl", "solidwaste", "solidwaste_pctl", "polburden", "polburden_sc", "polburden_pctl", "asthma", "asthma_pctl", "lowbirthwt", "lowbirthwt_pctl", "cardiovdis", "cardiovdis_pctl", "educ", "educ_pctl", "lingisolation", "lingisolation_pctl", "poverty", "poverty_pctl", "unemployment", "unemployment_pctl", "housingburden", "housingburden_pctl", "popchar", "popchar_sc", "popchar_pctl")
+
+# prepend 0 to every census tract GEOID to enable matching with block group IDs
+CES3results$GEOIDCT <- str_pad(CES3results$GEOIDCT, width=11, side="left", pad="0")
+
+CES3results <- CES3results %>%
+  mutate(polexposure_pctl = rowMeans(select(., c("ozone_pctl", "pm25_pctl", "dieselpm_pctl", "pesticides_pctl", 
+                                                 "toxrelease_pctl", "traffic_pctl", "drinkingwtr_pctl")), na.rm=TRUE),
+         polenvt_pctl = rowMeans(select(., c("cleanupsites_pctl", "grndwtrthreats_pctl", "hazwaste_pctl", 
+                                             "impwtrbodies_pctl", "solidwaste_pctl")), na.rm=TRUE),
+         popsens_pctl = rowMeans(select(., c("asthma_pctl", "lowbirthwt_pctl", "cardiovdis_pctl")), na.rm=TRUE),
+         popsocioecon_pctl = rowMeans(select(., c("educ_pctl", "lingisolation_pctl", "poverty_pctl", "unemployment_pctl",
+                                                  "housingburden_pctl")), na.rm=TRUE))
+```
+
+
+--------------------------------------------------------------------------------------------
+
+CENSUS BLOCK GROUPS: AGGREGATING CENSUS AND CALENVIROSCREEN DATA
+
+--------------------------------------------------------------------------------------------
+
+```{r}
+# Tract vs block group matching, https://www.census.gov/geo/reference/geoidentifiers.html
+# 11 characters for census tract, 12 (1 addtl) for block group
+# merge CES3 results for percentile (?) with demographic data spreadsheet
+bg_demo <- bg_demo %>%
+  merge(CES3results[ , c("GEOIDCT", "county", "zip_ct", "nearbycity",
+                         "polexposure_pctl", "polenvt_pctl", "popsens_pctl", "popsocioecon_pctl", "lingisolation_pctl",
+                         "polburden_pctl", "popchar_pctl", "ces3_sc", "ces3_pctl", "sb535disad")],
+        by=c("GEOIDCT"), all.x=TRUE)
+```
+
+```{r}
+demotypes <- sapply(bg_demo,class)
+write.csv(demotypes, file = "bgCAcensusCESclasses.csv", row.names=FALSE)
+write.csv(bg_demo, file="bgCAcensusCES.csv", row.names=FALSE)
+```
+
+
+--------------------------------------------------------------------------------------------
+
+ADDITIONAL GEOGRAPHIC FEATURES: CALHEAT BY CENSUS TRACT
+
+--------------------------------------------------------------------------------------------
+
+County-level CSV files downloaded from https://www.cal-heat.org/
+
+```{r}
+filenames <- list.files(path="CalHeat/")
+filenames <- filenames[-1:-3]
+filenames <- filenames[1:58]
+filenamesdir <- paste0("CalHeat/",filenames)
+
+calheat <- lapply(filenamesdir, read.csv, header=TRUE, sep=",", row.names=NULL, 
+                  colClasses=c(rep("character",3), rep("numeric",23)))
+
+calheat <- bind_rows(calheat)
+
+calheat$census_tract <- str_pad(calheat$census_tract, width=11, side="left", pad="0")
+```
+
+```{r}
+summary(calheat$perc_impervious_surfaces)
+summary(calheat$change_in_dev)
+summary(calheat$perc_no_tree_canopy)
+summary(calheat$uhii_avgdeltat)
+
+calheat <- calheat %>%
+  dplyr::rename("GEOIDCT"="census_tract") %>%
+  mutate(uhii_avgdeltat_noNA = ifelse(is.na(uhii_avgdeltat),0,uhii_avgdeltat))
+
+calheat <- calheat %>%
+  mutate(perc_impervious_surfaces_pctl = ecdf(calheat$perc_impervious_surfaces)(calheat$perc_impervious_surfaces)*100,
+         change_in_dev_pctl = ecdf(calheat$change_in_dev)(calheat$change_in_dev)*100,
+         perc_no_tree_canopy_pctl = ecdf(calheat$perc_no_tree_canopy)(calheat$perc_no_tree_canopy)*100,
+         uhii_avgdeltat_pctl = ecdf(calheat$uhii_avgdeltat_noNA)(calheat$uhii_avgdeltat_noNA)*100) %>%
+  mutate(urbanheat_sc = rowMeans(select(., c("perc_impervious_surfaces_pctl", "change_in_dev_pctl", 
+                                             "perc_no_tree_canopy_pctl", "uhii_avgdeltat_pctl")), na.rm=TRUE))
+
+calheat <- calheat %>%
+  mutate(urbanheat_pctl = ecdf(calheat$urbanheat_sc)(calheat$urbanheat_sc)*100)
+
+summary(calheat$uhii_avgdeltat_noNA)
+summary(calheat$urbanheat_sc)
+summary(calheat$urbanheat_pctl)
+```
+
+
+```{r}
+bg_demo <- bg_demo %>%
+  merge(calheat[,c("GEOIDCT","census_county","census_city","heat_health_action_index","tract_population",
+                   "urbanheat_pctl")], by=c("GEOIDCT"), all.x=TRUE)
+```
+
+```{r}
+demotypes <- sapply(bg_demo,class)
+write.csv(demotypes, file = "bgCAcensusCESclasses.csv", row.names=FALSE)
+write.csv(bg_demo, file="bgCAcensusCES.csv", row.names=FALSE)
+```
+
