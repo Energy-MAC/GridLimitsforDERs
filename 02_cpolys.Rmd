@@ -1,0 +1,551 @@
+---
+title: "02_cpolys"
+output: html_notebook
+---
+
+This notebook pulls in circuit polygon data from PG&E and SCE and analyzes clipping in ArcGIS (performing some basic sanity checks).
+
+```{r}
+library(tidyverse)
+library(tictoc)
+library(reshape2)
+library(ggplot2)
+library(stringr)
+library(tidytext)
+library(measurements) # https://cran.r-project.org/web/packages/measurements/measurements.pdf
+library(readxl)
+library(colorspace)
+library(cowplot)
+```
+
+--------------------------------------------------------------------------------------------
+
+SCE
+
+--------------------------------------------------------------------------------------------
+
+Circuit segment polygons
+
+```{r}
+SCE_cspoly = read.csv("../IOUdata/SCE/data_2019/ICA_Circuit_Polygons/SCE_ICAall_cspoly/SCE_ICAall_cspoly.csv", header=T, na.strings="?", colClasses=c(rep("integer",4), "character", rep("integer",4), "numeric", rep("character",3), rep("numeric",5), "factor", "character", "integer", rep("numeric",2), "character", rep("numeric",8), rep("integer",5), rep("character",2), rep("factor",2), rep("numeric", 11)))
+
+SCE_cspoly <- SCE_cspoly %>% unique() %>%
+  dplyr::rename("CircuitName"="CIRCUIT_NA", "SectionId"="SECTION_ID", "NodeId"="NODE_ID", "Phase"="PHASE",
+                "LineSeg"="LINE_SEGME", "CircVolt_kV"="CIRCUIT_VO", "Substation"="SUBSTATION", "Subst_kV"="SUBSTATI_1",
+                "System"="SYSTEM_NAM", "ICL"="ICA_OVERAL", "ICPVOF"="ICA_OVER_1", "ICPV"="ICA_OVER_2", "ICUGOF"="UNIFORM_GE",
+                "ICUG"="UNIFORM__1", "Note"="NOTE", "DwnldLink"="DOWNLOAD_L", "ObjectId"="OBJECTID",
+                "Shape_Len"="Shape__Len", "Length_m"="Length_m", "CircName"="CIRCUIT__1", "Agr_pct"="AGR_PCT",
+                "Com_pct"="COM_PCT", "Ind_pct"="IND_PCT", "Res_pct"="RES_PCT", "Oth_pct"="OTHER_PCT",
+                "ExistDG"="GEN_ALLOC", "QueueDG"="GEN_QUE", "TotalDG"="TOTAL_GEN") %>%
+  select(-c("Shape_Len","MTFCC10","FUNCSTAT10")) %>%
+  mutate(IOU = "SCE")
+
+summary(as.factor(SCE_cspoly$LineSeg))
+```
+
+Circuit / block group polygons
+
+```{r}
+SCE_cpolybg = read.csv("../IOUdata/SCE/data_2019/ICA_Circuit_Polygons/SCE_ICAall_cpolybg_zcta/SCE_ICAall_cpolybg_zcta_ghi.csv", header=T, na.strings="?", colClasses=c(rep("integer",5), rep("character",2), rep("numeric",3), rep("character",3), rep("numeric",20), rep("numeric",9), rep("integer",3), "character", rep("numeric",11), "character", "numeric"))
+
+SCE_clsstats <- SCE_cspoly %>% select(LineSeg, CircuitName, GEOID10) %>%
+  mutate(CLS = ifelse(LineSeg==0,NA,LineSeg),
+         CircuitName = toupper(CircuitName)) %>%
+  group_by(CircuitName, GEOID10) %>%
+  summarise(CLSmax = max(CLS, na.rm=TRUE), CLSavg = mean(CLS, na.rm=TRUE), CLSmin = min(CLS, na.rm=TRUE))
+
+SCE_cpolybg <- SCE_cpolybg %>% unique() %>%
+  dplyr::rename("CircuitNum"="TARGET_F_1", "CircuitName"="CIRCUIT_NA", "Phase_max"="MAX_PHASE", "Phase_min"="MIN_PHASE",
+                "CircVolt_kV"="FIRST_CIRC", "Substation"="FIRST_SUBS", "Subst_kV"="FIRST_SU_1", "System"="FIRST_SYST",
+                "ICL_max"="MAX_ICA_OV", "ICL_avg"="MEAN_ICA_O", "ICL_min"="MIN_ICA_OV", "ICL_std"="STD_ICA_OV",
+                "ICPVOF_max"="MAX_ICA__1", "ICPVOF_avg"="MEAN_ICA_1", "ICPVOF_min"="MIN_ICA__1", "ICPVOF_std"="STD_ICA__1",
+                "ICPV_max"="MAX_ICA__2", "ICPV_avg"="MEAN_ICA_2", "ICPV_min"="MIN_ICA__2", "ICPV_std"="STD_ICA__2",
+                "ICUGOF_max"="MAX_UNIFOR", "ICUGOF_avg"="MEAN_UNIFO", "ICUGOF_min"="MIN_UNIFOR", "ICUGOF_std"="STD_UNIFOR",
+                "ICUG_max"="MAX_UNIF_1", "ICUG_avg"="MEAN_UNI_1", "ICUG_min"="MIN_UNIF_1", "ICUG_std"="STD_UNIF_1",
+                "Length_m"="SUM_Length",
+                "Agr_pct"="FIRST_AGR_", "Com_pct"="FIRST_COM_", "Ind_pct"="FIRST_IND_", "Res_pct"="FIRST_RES_", 
+                "Oth_pct"="FIRST_OTHE", "ExistDG"="FIRST_GEN_", "QueueDG"="FIRST_GEN1", "TotalDG"="FIRST_TOTA",
+                "CountyId"="FIRST_COUN", "TractId"="FIRST_TRAC", "BlkgId"="FIRST_BLKG", "GEOID"="FIRST_GEOI",
+                "ALAND"="FIRST_ALAN", "AWATER"="FIRST_AWAT", "Intptlat"="FIRST_INTP", "Intptlon"="FIRST_IN_1",
+                "OrigArea"="FIRST_Orig", "InhArea"="FIRST_InhA", "InhArea_Wt"="FIRST_In_2", "SCEarea"="FIRST_SCEa", 
+                "SCEarea_Wt"="FIRST_SC_1", "CpolyA"="SUM_CpolyA", "ZCTA"="ZCTA5CE10", "ghi_kWhpm2day"="ghi") %>%
+  select(-c("GEOID")) %>%
+  mutate(CircuitName = toupper(CircuitName), IOU = "SCE") %>%
+  merge(SCE_clsstats, by=c("GEOID10","CircuitName"), all.x=TRUE)
+
+is.na(SCE_cpolybg) <- do.call(cbind,lapply(SCE_cpolybg, is.infinite))
+```
+
+Full circuit polygons
+
+```{r}
+SCE_ctotpoly = read.csv("../IOUdata/SCE/data_2019/ICA_Circuit_Polygons/SCE_ICAall_ctotpoly/SCE_ICAall_ctotpoly.csv", header=T, na.strings="?", colClasses=c("integer", "character", rep("numeric",3), rep("character",3), rep("numeric",20), rep("numeric",10)))
+
+SCE_circSAIDI = read.csv("circuitfiles/SCE_circSAIDI.csv", header=T, na.strings="?", colClasses=c("character","character", rep("numeric",10)))
+names(SCE_circSAIDI) <- c("CircuitNum", "CircuitName", "SAIDI2007", "SAIDI2008", "SAIDI2009", "SAIDI2010", "SAIDI2011", "SAIDI2012", "SAIDI2013", "SAIDI2014", "SAIDI2015", "SAIDI2016")
+
+SCE_circcust = read_excel("../IOUdata/Sloanproject/New_Circuit_Data/2012-2017CircuitCustomerBase.xlsx", sheet=1, na="NA")
+names(SCE_circcust) <- c("Year", "CircuitNo", "CircuitNum", "CircuitName", "CustBase")
+
+SCE_clsstats <- SCE_cspoly %>% select(LineSeg, CircuitName) %>%
+  mutate(CLS = ifelse(LineSeg==0,NA,LineSeg),
+         CircuitName = toupper(CircuitName)) %>%
+  group_by(CircuitName) %>%
+  summarise(CLSmax = max(CLS, na.rm=TRUE), CLSavg = mean(CLS, na.rm=TRUE), CLSmin = min(CLS, na.rm=TRUE))
+
+SCE_ctotpoly <- SCE_ctotpoly %>% unique() %>%
+  dplyr::rename("CircuitName"="CIRCUIT_NA", "Phase_max"="MAX_PHASE", "Phase_min"="MIN_PHASE", 
+                "CircVolt_kV"="FIRST_CIRC", "Substation"="FIRST_SUBS", "Subst_kV"="FIRST_SU_1", "System"="FIRST_SYST",
+                "ICL_max"="MAX_ICA_OV", "ICL_avg"="MEAN_ICA_O", "ICL_min"="MIN_ICA_OV", "ICL_std"="STD_ICA_OV",
+                "ICPVOF_max"="MAX_ICA__1", "ICPVOF_avg"="MEAN_ICA_1", "ICPVOF_min"="MIN_ICA__1", "ICPVOF_std"="STD_ICA__1",
+                "ICPV_max"="MAX_ICA__2", "ICPV_avg"="MEAN_ICA_2", "ICPV_min"="MIN_ICA__2", "ICPV_std"="STD_ICA__2",
+                "ICUGOF_max"="MAX_UNIFOR", "ICUGOF_avg"="MEAN_UNIFO", "ICUGOF_min"="MIN_UNIFOR", "ICUGOF_std"="STD_UNIFOR",
+                "ICUG_max"="MAX_UNIF_1", "ICUG_avg"="MEAN_UNI_1", "ICUG_min"="MIN_UNIF_1", "ICUG_std"="STD_UNIF_1",
+                "Length_m_ctot"="SUM_Length",
+                "Agr_pct"="FIRST_AGR_", "Com_pct"="FIRST_COM_", "Ind_pct"="FIRST_IND_", "Res_pct"="FIRST_RES_", 
+                "Oth_pct"="FIRST_OTHE", "ExistDG"="FIRST_GEN_", "QueueDG"="FIRST_GEN1", "TotalDG"="FIRST_TOTA",
+                "CtotpolyA"="SUM_CpolyA") %>%
+  mutate(CircuitName = toupper(CircuitName), IOU = "SCE") %>%
+  merge(SCE_clsstats, by=c("CircuitName"), all.x=TRUE) %>%
+  merge( filter(SCE_circcust, Year==2015)[ , c("CircuitName", "CustBase")], by="CircuitName", all.x=TRUE) %>%
+  dplyr::rename("CustBase2015"="CustBase") %>%
+  merge( filter(SCE_circcust, Year==2017)[ , c("CircuitName", "CustBase")], by="CircuitName", all.x=TRUE) %>%
+  dplyr::rename("CustBase2017"="CustBase") %>%
+  mutate(CustRes2015 = CustBase2015 * Res_pct /100,
+         CustRes2017 = CustBase2017 * Res_pct /100) %>%
+  merge(SCE_circSAIDI[ , c("CircuitName","SAIDI2012","SAIDI2013","SAIDI2014","SAIDI2015","SAIDI2016")], 
+        by="CircuitName", all.x=TRUE) %>%
+  mutate(SAIDI5yravg = rowMeans(select(., c("SAIDI2012","SAIDI2013","SAIDI2014","SAIDI2015","SAIDI2016")), na.rm=TRUE)) %>%
+  select(-c(SAIDI2012,SAIDI2013,SAIDI2014,SAIDI2015,SAIDI2016)) %>% unique()
+  
+is.na(SCE_ctotpoly) <- do.call(cbind,lapply(SCE_ctotpoly, is.infinite))
+
+# how many circuit segments don't have a match?
+nrow(subset(SCE_ctotpoly, is.na(CustBase2015)))
+nrow(subset(SCE_ctotpoly, is.na(CustBase2017)))
+nrow(subset(SCE_ctotpoly, is.na(SAIDI5yravg)))
+
+SCE_ctotpoly <- SCE_ctotpoly %>%
+  merge(SCE_RAM[ , c("CircuitName", "Substation", "ExistGen_MW", "QueueGen_MW", "TotalGen_MW", 
+                     "ProjLoad_MW", "CurrPen_Pct", "MxRemGen_MW", "x15PenCp_MW", "DelivNote")],
+        by = c("CircuitName","Substation"), all.x=TRUE) %>% unique() %>%
+  dplyr::rename("ResCust"="CustRes2017")
+
+# Update text for deliverability note:
+summary(SCE_ctotpoly$DelivNote)
+SCE_ctotpoly$DelivNote <- factor(SCE_ctotpoly$DelivNote)
+levels(SCE_ctotpoly$DelivNote)
+levels(SCE_ctotpoly$DelivNote)[1] <- "Undetermined"
+levels(SCE_ctotpoly$DelivNote)[2] <- "Adequate"
+levels(SCE_ctotpoly$DelivNote)[3] <- "Inadequate"
+levels(SCE_ctotpoly$DelivNote)
+
+SCE_cpolybg <- SCE_cpolybg %>%
+  merge(SCE_ctotpoly[ , c("CircuitName", "CLSmax", "CLSavg", "CLSmin", "ICL_max", "ICL_avg", "ICL_min", 
+                          "ICPVOF_max", "ICPVOF_avg", "ICPVOF_min", "ICPV_max", "ICPV_avg", "ICPV_min", 
+                          "ICUGOF_max", "ICUGOF_avg", "ICUGOF_min", "ICUG_max", "ICUG_avg", "ICUG_min",
+                          "CtotpolyA", "Length_m_ctot",
+                          "CustBase2015", "CustBase2017", "CustRes2015", "ResCust", "SAIDI5yravg",
+                          "ExistGen_MW", "QueueGen_MW", "TotalGen_MW", "ProjLoad_MW", "CurrPen_Pct", 
+                          "MxRemGen_MW", "x15PenCp_MW", "DelivNote")],
+                     by=c("CircuitName"), suffixes = c("","_ctot"), all.x=TRUE) %>%
+  mutate(Length_Wt = Length_m / Length_m_ctot) %>% unique()
+
+summary(SCE_cpolybg[, c("Length_m", "Length_m_ctot", "Length_Wt")])
+```
+
+--------------------------------------------------------------------------------------------
+
+PG&E
+
+--------------------------------------------------------------------------------------------
+
+Circuit segment polygons
+
+```{r}
+PGE_cspoly = read.csv("../IOUdata/PGE/data_2019/ICA_Circuit_Polygons/PGE_ICA19_cspoly/PGE_ICA19_cspoly.csv", header=T, na.strings="?", colClasses = c(rep("integer",6), rep("character",2), "integer", "character", rep("numeric",6), "integer", "numeric", "integer", "character", "integer", "character", rep("factor",2), rep("numeric",8), "integer", rep("numeric",9), rep("integer",5), rep("character",2), rep("factor",2), rep("numeric",11)))
+
+PGE_cspoly <- PGE_cspoly %>%
+  dplyr::rename("CircuitId"="LineDeta_1", "CircuitName"="LineDeta_2", "GlobalId"="LineDeta_3",
+                "LineSegId"="LineDeta_4", "ICAanalysis"="LineDeta_5", "ICL"="LineDeta_6", "UGOF"="LineDeta_7",
+                "PVOF"="LineDeta_8", "UG"="LineDeta_9", "PV"="LineDet_10", 
+                "ShapeLen"="LineDet_11", "ICAavail"="LineDet_12", "Length_m"="LineDet_13", 
+                "FeederNum"="LineDet_14", "Substation"="LineDet_15", "FeederId"="LineDet_16", "CircName"="LineDet_17",
+                "Nominal_kV"="LineDet_18", "LoadProfile"="LineDet_19", 
+                "ResCust"="LineDet_20", "ComCust"="LineDet_21", "IndCust"="LineDet_22", "AgrCust"="LineDet_23", 
+                "OthCust"="LineDet_24", "ExistDG"="LineDet_25", "QueueDG"="LineDet_26", "TotalDG"="LineDet_27",
+                "Show"="LineDet_28", "CircVolt_kV"="LineDet_29", "ShapeLenCtot"="LineDet_30", "LenCtot_m"="LineDet_31", 
+                "CustTot"="LineDet_32", "Res_pct"="LineDet_33", "Com_pct"="LineDet_34", "Ind_pct"="LineDet_35", 
+                "Agr_pct"="LineDet_36", "Oth_pct"="LineDet_37") %>%
+  mutate(Agr_pct=Agr_pct*100, Com_pct=Com_pct*100, Ind_pct=Ind_pct*100, Res_pct=Res_pct*100, Oth_pct=Oth_pct*100) %>%
+  mutate(ICAanalysis=factor(ICAanalysis, levels=c("Dec 2018", "Jan 2019", "Feb 2019", "Mar 2019", "Apr 2019", 
+                                                  "May 2019", "Jun 2019", "Jul 2019", "Aug 2019", "Sep 2019", 
+                                                  "Nov 2019", "Dec 2019")),
+         IOU = "PGE")
+
+summary(PGE_cspoly$ICAanalysis)
+```
+
+
+Circuit / block group polygons
+
+```{r}
+PGE_cpolybg = read.csv("../IOUdata/PGE/data_2019/ICA_Circuit_Polygons/PGE_ICA19_cpolybg_zcta/PGE_ICA19_cpolybg_zcta_ghi.csv", header=T, na.strings="?", colClasses=c(rep("integer",5), rep("character",2), "integer", "character", rep("numeric",20), rep("numeric",2), "numeric", "integer", rep("character",2), rep("numeric",16), rep("integer",3), "character", rep("numeric",11), "character", "numeric")) 
+
+PGE_cpolybgICA = read.csv("../IOUdata/PGE/data_2019/ICA_Circuit_Polygons/PGE_ICA19_cpolybg_ICAavail_zcta/PGE_ICA19_cpolybg_ICAavail_zcta_ghi.csv", header=T, na.strings="?", colClasses=c(rep("integer",5), "character", "integer", "character", rep("numeric",20), "integer", "numeric", "integer", rep("character",2), rep("numeric",16), rep("integer",3), "character", rep("numeric",11), "character", "numeric"))
+
+PGE_cpolybg <- PGE_cpolybg %>% unique() %>%
+  dplyr::rename("CircuitNum"="TARGET_F_1", "CircuitName"="LineDeta_2", "CircuitId"="FIRST_Line", 
+                "ICL_max"="MAX_LineDe", "ICL_avg"="MEAN_LineD", "ICL_min"="MIN_LineDe", "ICL_std"="STD_LineDe",
+                "ICUGOF_max"="MAX_Line_1", "ICUGOF_avg"="MEAN_Lin_1", "ICUGOF_min"="MIN_Line_1", "ICUGOF_std"="STD_Line_1",
+                "ICPVOF_max"="MAX_Line_2", "ICPVOF_avg"="MEAN_Lin_2", "ICPVOF_min"="MIN_Line_2", "ICPVOF_std"="STD_Line_2",
+                "ICUG_max"="MAX_Line_3", "ICUG_avg"="MEAN_Lin_3", "ICUG_min"="MIN_Line_3", "ICUG_std"="STD_Line_3",
+                "ICPV_max"="MAX_Line_4", "ICPV_avg"="MEAN_Lin_4", "ICPV_min"="MIN_Line_4", "ICPV_std"="STD_Line_4",
+                "CScount"="COUNT_Line", "CSwICA"="SUM_LineDe", "Length_m"="SUM_Line_1",
+                "SubId"="FIRST_Li_2", "Substation"="FIRST_Li_3", "Nominal_kV"="FIRST_Li_4",
+                "ResCust"="FIRST_Li_5", "ComCust"="FIRST_Li_6", "IndCust"="FIRST_Li_7", "AgrCust"="FIRST_Li_8", 
+                "OthCust"="FIRST_Li_9", "ExistDG"="FIRST_L_10", "QueueDG"="FIRST_L_11", "TotalDG"="FIRST_L_12",
+                "CircVolt_kV"="FIRST_L_13", "LenCtot_m"="FIRST_L_14", "CustTot"="FIRST_L_15", 
+                "Res_pct"="FIRST_L_16", "Com_pct"="FIRST_L_17", "Ind_pct"="FIRST_L_18", "Agr_pct"="FIRST_L_19", 
+                "Oth_pct"="FIRST_L_20",
+                "CountyId"="FIRST_COUN", "TractId"="FIRST_TRAC", "BlkgId"="FIRST_BLKG", "GEOID"="FIRST_GEOI",
+                "ALAND"="FIRST_ALAN", "AWATER"="FIRST_AWAT", "Intptlat"="FIRST_INTP", "Intptlon"="FIRST_IN_1",
+                "OrigArea"="FIRST_Orig", "InhArea"="FIRST_InhA", "InhArea_Wt"="FIRST_In_2", "PGEarea"="FIRST_PGEa", 
+                "PGEarea_Wt"="FIRST_PG_1", "CpolyA"="SUM_CpolyA", "ZCTA"="ZCTA5CE10", "ghi_kWhpm2day"="ghi") %>%
+  select(-c("FIRST_Li_1","GEOID")) %>%
+  mutate(Agr_pct=Agr_pct*100, Com_pct=Com_pct*100, Ind_pct=Ind_pct*100, Res_pct=Res_pct*100, Oth_pct=Oth_pct*100) %>%
+  mutate(IOU = "PGE")
+
+PGE_cpolybgICA <- PGE_cpolybgICA %>% unique() %>%
+  dplyr::rename("CircuitNum"="TARGET_F_1", "CircuitName"="LineDeta_2", "CircuitId"="FIRST_Line", 
+                "ICL_max"="MAX_LineDe", "ICL_avg"="MEAN_LineD", "ICL_min"="MIN_LineDe", "ICL_std"="STD_LineDe",
+                "ICUGOF_max"="MAX_Line_1", "ICUGOF_avg"="MEAN_Lin_1", "ICUGOF_min"="MIN_Line_1", "ICUGOF_std"="STD_Line_1",
+                "ICPVOF_max"="MAX_Line_2", "ICPVOF_avg"="MEAN_Lin_2", "ICPVOF_min"="MIN_Line_2", "ICPVOF_std"="STD_Line_2",
+                "ICUG_max"="MAX_Line_3", "ICUG_avg"="MEAN_Lin_3", "ICUG_min"="MIN_Line_3", "ICUG_std"="STD_Line_3",
+                "ICPV_max"="MAX_Line_4", "ICPV_avg"="MEAN_Lin_4", "ICPV_min"="MIN_Line_4", "ICPV_std"="STD_Line_4",
+                "ICA"="FIRST_Li_2", "ICAseg"="SUM_LineDe", "Length_m"="SUM_LineDe", 
+                "SubstId"="FIRST_Li_3", "Substation"="FIRST_Li_4", "Nominal_kV"="FIRST_Li_5",
+                "ResCust"="FIRST_Li_6", "ComCust"="FIRST_Li_7", "IndCust"="FIRST_Li_8", "AgrCust"="FIRST_Li_9", 
+                "OthCust"="FIRST_L_10", "ExistDG"="FIRST_L_11", "QueueDG"="FIRST_L_12", "TotalDG"="FIRST_L_13",
+                "CircVolt_kV"="FIRST_L_14", "LenCtot_m"="FIRST_L_15", "CustTot"="FIRST_L_16", "Res_pct"="FIRST_L_17", 
+                "Com_pct"="FIRST_L_18", "Ind_pct"="FIRST_L_19", "Agr_pct"="FIRST_L_20", "Oth_pct"="FIRST_L_21",
+                "CountyId"="FIRST_COUN", "TractId"="FIRST_TRAC", "BlkgId"="FIRST_BLKG", "GEOID10"="FIRST_GEOI",
+                "ALAND"="FIRST_ALAN", "AWATER"="FIRST_AWAT", "Intptlat"="FIRST_INTP", "Intptlon"="FIRST_IN_1",
+                "OrigArea"="FIRST_Orig", "InhArea"="FIRST_InhA", "InhArea_Wt"="FIRST_In_2", "PGEarea"="FIRST_PGEa", 
+                "PGEarea_Wt"="FIRST_PG_1", "CpolyA"="SUM_CpolyA", "ZCTA"="ZCTA5CE10", "ghi_kWhpm2day"="ghi") %>%
+  select(-c("FIRST_Li_1")) %>%
+  mutate(Agr_pct=Agr_pct*100, Com_pct=Com_pct*100, Ind_pct=Ind_pct*100, Res_pct=Res_pct*100, Oth_pct=Oth_pct*100) %>%
+  mutate(IOU = "PGE")
+```
+
+Full circuit polygons
+
+```{r}
+PGE_ctotpoly = read.csv("../IOUdata/PGE/data_2019/ICA_Circuit_Polygons/PGE_ICA19_ctotpoly/PGE_ICA19_ctotpoly.csv", header=T, na.strings="?", colClasses = c("integer", "character", "integer", "character", rep("numeric",20), rep("numeric",3), "integer", rep("character",2), rep("integer",8), rep("numeric",9)))
+
+PGE_subs = read.csv("circuitfiles/PGE_subs.csv", header=T, na.strings="?", colClasses=c("character", rep("integer",2), rep("numeric",3), "factor", "integer", rep("factor",4), rep("numeric",16)))
+
+PGE_ctotpoly <- PGE_ctotpoly %>%
+  dplyr::rename("CircuitName"="LineDeta_2", "CircuitId"="FIRST_Line", 
+                "ICL_max"="MAX_LineDe", "ICL_avg"="MEAN_LineD", "ICL_min"="MIN_LineDe", "ICL_std"="STD_LineDe",
+                "ICUGOF_max"="MAX_Line_1", "ICUGOF_avg"="MEAN_Lin_1", "ICUGOF_min"="MIN_Line_1", "ICUGOF_std"="STD_Line_1",
+                "ICPVOF_max"="MAX_Line_2", "ICPVOF_avg"="MEAN_Lin_2", "ICPVOF_min"="MIN_Line_2", "ICPVOF_std"="STD_Line_2",
+                "ICUG_max"="MAX_Line_3", "ICUG_avg"="MEAN_Lin_3", "ICUG_min"="MIN_Line_3", "ICUG_std"="STD_Line_3",
+                "ICPV_max"="MAX_Line_4", "ICPV_avg"="MEAN_Lin_4", "ICPV_min"="MIN_Line_4", "ICPV_std"="STD_Line_4",
+                "CScount"="COUNT_Line", "CSwICA"="SUM_LineDe", "Length_m"="SUM_Line_1",
+                "SubstId"="FIRST_Li_2", "Substation"="FIRST_Li_3", "Nominal_kV"="FIRST_Li_4",
+                "ResCust"="FIRST_Li_5", "ComCust"="FIRST_Li_6", "IndCust"="FIRST_Li_7", "AgrCust"="FIRST_Li_8", 
+                "OthCust"="FIRST_Li_9", "ExistDG"="FIRST_L_10", "QueueDG"="FIRST_L_11", "TotalDG"="FIRST_L_12",
+                "CircVolt_kV"="FIRST_L_13", "LenCtot_m"="FIRST_L_14", "CustTot"="FIRST_L_15", "Res_pct"="FIRST_L_16", 
+                "Com_pct"="FIRST_L_17", "Ind_pct"="FIRST_L_18", "Agr_pct"="FIRST_L_19", "Oth_pct"="FIRST_L_20",
+                "CtotpolyA"="SUM_CpolyA") %>%
+  select(-c("FIRST_Li_1")) %>%
+  mutate(Agr_pct=Agr_pct*100, Com_pct=Com_pct*100, Ind_pct=Ind_pct*100, Res_pct=Res_pct*100, Oth_pct=Oth_pct*100) %>%
+  mutate(IOU = "PGE") %>%
+  merge(PGE_subs[,c("Substation","Min_kV","Max_kV","N_banks","Division","LCRarea","Owner",
+                    "SAIDI3a5yravg","SAIFI3a5yravg","MAIFI3a5yravg","CAIDI3a5yravg")], 
+        by="Substation", suffixes=c("","_sub"), all.x=TRUE) %>% unique()
+
+PGE_cpolybg <- PGE_cpolybg %>%
+  merge(PGE_ctotpoly[ , c("CircuitName", "ICL_max", "ICL_avg", "ICL_min", 
+                          "ICPVOF_max", "ICPVOF_avg", "ICPVOF_min", "ICPV_max", "ICPV_avg", "ICPV_min", 
+                          "ICUGOF_max", "ICUGOF_avg", "ICUGOF_min", "ICUG_max", "ICUG_avg", "ICUG_min",
+                          "Length_m", "CtotpolyA", "Division", "LCRarea", "Owner",
+                          "SAIDI3a5yravg", "SAIFI3a5yravg", "MAIFI3a5yravg", "CAIDI3a5yravg")], 
+        by=c("CircuitName"), suffixes = c("","_ctot"), all.x=TRUE) %>%
+  mutate(Length_Wt = Length_m / Length_m_ctot) %>% unique()
+
+summary(PGE_cpolybg[, c("Length_m", "Length_m_ctot", "Length_Wt")])
+
+PGE_cpolybgICA <- PGE_cpolybgICA %>%
+  merge(PGE_ctotpoly[ , c("CircuitName", "ICL_max", "ICL_avg", "ICL_min", 
+                          "ICPVOF_max", "ICPVOF_avg", "ICPVOF_min", "ICPV_max", "ICPV_avg", "ICPV_min", 
+                          "ICUGOF_max", "ICUGOF_avg", "ICUGOF_min", "ICUG_max", "ICUG_avg", "ICUG_min",
+                          "Length_m", "CtotpolyA", "Division", "LCRarea", "Owner",
+                          "SAIDI3a5yravg", "SAIFI3a5yravg", "MAIFI3a5yravg", "CAIDI3a5yravg")], 
+        by=c("CircuitName"), suffixes = c("","_ctot"), all.x=TRUE) %>%
+  mutate(Length_Wt = Length_m / Length_m_ctot) %>% unique()
+
+summary(PGE_cpolybgICA[, c("Length_m", "Length_m_ctot", "Length_Wt")])
+  
+```
+
+
+Do individual circuit polygons add up to 100% of potentially-inhabited area? Do circuit line segments add up to 100% of circuit line lengths?
+
+```{r}
+SCE_cpolybg %>% group_by(GEOID10) %>% summarise(CpolyA_Wttot = sum(CpolyA_Wt, na.rm=TRUE)) %>%
+  ggplot( aes(x=CpolyA_Wttot)) + geom_histogram()
+
+SCE_cpolybg %>% group_by(CircuitName) %>% summarise(Len_Wttot = sum(Length_Wt, na.rm=TRUE)) %>%
+  ggplot( aes(x=Len_Wttot)) + geom_histogram()
+
+SCE_cpolybg %>% group_by(CircuitName) %>% summarise(Len_Wttot = sum(Length_Wt, na.rm=TRUE)) %>% filter(Len_Wttot>1.000001)
+```
+
+```{r}
+PGE_cpolybg %>% group_by(GEOID10) %>% summarise(CpolyA_Wttot = sum(CpolyA_Wt, na.rm=TRUE)) %>%
+  ggplot( aes(x=CpolyA_Wttot)) + geom_histogram()
+
+PGE_cpolybgICA %>% group_by(GEOID10) %>% summarise(CpolyA_Wttot = sum(CpolyA_Wt, na.rm=TRUE)) %>%
+  ggplot( aes(x=CpolyA_Wttot)) + geom_histogram()
+
+PGE_cpolybg %>% group_by(CircuitName) %>% summarise(Len_Wttot = sum(Length_Wt, na.rm=TRUE)) %>%
+  ggplot( aes(x=Len_Wttot)) + geom_histogram()
+
+PGE_cpolybgICA %>% group_by(CircuitName) %>% summarise(Len_Wttot = sum(Length_Wt, na.rm=TRUE)) %>%
+  ggplot( aes(x=Len_Wttot)) + geom_histogram()
+
+PGE_cpolybgICA %>% group_by(CircuitName) %>% summarise(Len_Wttot = sum(Length_Wt, na.rm=TRUE)) %>% filter(Len_Wttot>1.000001)
+```
+
+
+We will proceed with this data, assuming the denominator of all size fractions is 1.
+It makes sense that the PGE_cpolybgICA graphs do not cluster around 1, as they consider only the portions of circuits/block groups for which PG&E provides ICA information.
+
+```{r}
+PGE_cpolybg <- PGE_cpolybg %>% mutate(ICA_pct = CSwICA/CScount)
+
+PGE_cpolybgICA <- PGE_cpolybgICA %>%
+  merge(PGE_cpolybg[,c("CircuitName","GEOID10","ICA_pct")], by=c("CircuitName","GEOID10"), all.x=TRUE) %>% unique()
+```
+
+
+--------------------------------------------------------------------------------------------
+
+CIRCUIT POPULATION AND DEMOGRAPHICS
+
+--------------------------------------------------------------------------------------------
+
+Demographic info, created via CensusDataAggregation.Rmd
+
+```{r}
+demotypes = read.csv("../demographics/bgCAcensusCESclasses.csv", header=T, na.strings="?")
+bgCAcensusCES = read.csv("../demographics/bgCAcensusCES.csv", header=T, na.strings="?", colClasses=as.character(demotypes$x))
+```
+
+
+--------------------------------------------------------------------------------------------
+
+MERGING IN POPULATION INFO
+
+--------------------------------------------------------------------------------------------
+
+Create new columns for numbers of people, households, and structures in each circuit polygon, and per length of circuit line:
+(Here, we first scale by the amount of area that's in SCE's territory, then assume that all of that is reallocated to inhabited areas. Population is not scaled by InhArea_Wt because that's a spatial measure, not a measure of population shrinkage. Population is scaled by CpolyAtot_Wt, which is a fraction of the amount of inhabited area that circuit polygon represents.)
+
+```{r}
+SCE_ICAall <- SCE_cpolybg %>%
+  merge(bgCAcensusCES[,c("GEOID10","tothh","totpop","totstr","county","zip_ct","nearbycity")], by="GEOID10", all.x=TRUE) %>%
+  mutate(tothh_Cpoly = tothh * SCEarea_Wt * CpolyA_Wt, 
+         totpop_Cpoly = totpop * SCEarea_Wt * CpolyA_Wt,
+         totstr_Cpoly = totstr * SCEarea_Wt * CpolyA_Wt) %>%
+  mutate(tothh_perkm = tothh_Cpoly / Length_m *1000) %>% unique()
+
+PGE_all <- PGE_cpolybg %>%
+  merge(bgCAcensusCES[,c("GEOID10","tothh","totpop","totstr","county","zip_ct","nearbycity")], by="GEOID10", all.x=TRUE) %>%
+  mutate(tothh_Cpoly = tothh * PGEarea_Wt * CpolyA_Wt, 
+         totpop_Cpoly = totpop * PGEarea_Wt * CpolyA_Wt,
+         totstr_Cpoly = totstr * PGEarea_Wt * CpolyA_Wt) %>%
+  mutate(tothh_perkm = tothh_Cpoly / Length_m *1000) %>% unique()
+
+PGE_ICAall <- PGE_cpolybgICA %>%
+  merge(bgCAcensusCES[,c("GEOID10","tothh","totpop","totstr","county","zip_ct","nearbycity")], by="GEOID10", all.x=TRUE) %>%
+  mutate(tothh_Cpoly = tothh * PGEarea_Wt * CpolyA_Wt, 
+         totpop_Cpoly = totpop * PGEarea_Wt * CpolyA_Wt,
+         totstr_Cpoly = totstr * PGEarea_Wt * CpolyA_Wt) %>%
+  mutate(tothh_perkm = tothh_Cpoly / Length_m *1000) %>% unique()
+```
+
+
+--------------------------------------------------------------------------------------------
+
+CHECKING CIRCUIT-LEVEL POPULATION ALLOCATION
+
+--------------------------------------------------------------------------------------------
+
+```{r}
+SCEvals <- SCE_ICAall %>% group_by(CircuitName) %>%
+  summarise(tothh_ctot = sum(tothh_Cpoly, na.rm=TRUE),
+            totpop_ctot = sum(totpop_Cpoly, na.rm=TRUE),
+            totstr_ctot = sum(totstr_Cpoly, na.rm=TRUE))
+
+SCE_ctotpoly <- merge(SCE_ctotpoly, SCEvals, by=c("CircuitName"), all.x=TRUE)
+
+SCE_ICAall <- SCE_ICAall %>%
+  merge(SCEvals, by=c("CircuitName"), suffixes=c("","ctot"), all.x=TRUE) %>% unique() %>%
+  mutate(tothh_pct = tothh_Cpoly / tothh_ctot,
+         totpop_pct = totpop_Cpoly / totpop_ctot,
+         totstr_pct = totstr_Cpoly / totstr_ctot)
+
+summary(SCE_ICAall[,c("tothh_Cpoly","tothh_ctot","tothh_pct")])
+```
+
+For PG&E, we can calculate the total number of people, households, and structures served by all circuits and by circuits with ICA information. Since we're focusing our analysis on circuits with ICA info, we calculate the percent households against those served by circuits with ICA information.
+
+```{r}
+PGEvals <- PGE_all %>% group_by(CircuitName) %>%
+  summarise(tothh_ctot = sum(tothh_Cpoly, na.rm=TRUE),
+            totpop_ctot = sum(totpop_Cpoly, na.rm=TRUE),
+            totstr_ctot = sum(totstr_Cpoly, na.rm=TRUE))
+
+PGE_ctotpoly <- merge(PGE_ctotpoly, PGEvals, by=c("CircuitName"), all.x=TRUE)
+
+PGEvals <- PGE_ICAall %>% group_by(CircuitName) %>%
+  summarise(tothh_ctot = sum(tothh_Cpoly, na.rm=TRUE),
+            totpop_ctot = sum(totpop_Cpoly, na.rm=TRUE),
+            totstr_ctot = sum(totstr_Cpoly, na.rm=TRUE))
+
+PGE_ctotpoly <- merge(PGE_ctotpoly, PGEvals, by=c("CircuitName"), suffixes=c("","ICA"), all.x=TRUE) %>%
+  mutate(tothhICA_pct = tothh_ctotICA/tothh_ctot, 
+         totpopICA_pct = totpop_ctotICA/totpop_ctot, 
+         totstrICA_pct = totstr_ctotICA/totstr_ctot)
+
+PGE_ICAall <- PGE_ICAall %>%
+  merge(PGE_ctotpoly[ ,c("CircuitName","tothh_ctot","totpop_ctot","totstr_ctot",
+                         "tothh_ctotICA","totpop_ctotICA","totstr_ctotICA",
+                         "tothhICA_pct","totpopICA_pct","totstrICA_pct")], by="CircuitName", all.x=TRUE) %>%
+  unique() %>%
+  mutate(tothh_pct = tothh_Cpoly / tothh_ctotICA,
+         totpop_pct = totpop_Cpoly / totpop_ctotICA,
+         totstr_pct = totstr_Cpoly / totstr_ctotICA)
+
+summary(PGE_ICAall[,c("tothh_Cpoly","tothh_ctot","tothh_ctotICA","tothh_pct","tothhICA_pct")])
+```
+
+Verifiying that total number of households and population still add up to reasonable totals:
+
+```{r}
+cat("SCE: We estimate that ",sum(SCE_ctotpoly$totpop_ctot, na.rm=TRUE)," people and ",sum(SCE_ctotpoly$tothh_ctot, na.rm=TRUE)," households are located in SCE's territory. SCE estimates their total customer base as ",sum(SCE_ctotpoly$CustBase2015, na.rm=TRUE)," and ",sum(SCE_ctotpoly$CustBase2017, na.rm=TRUE)," for 2015 and 2017, respectively, and their residential customer base as ",sum(SCE_ctotpoly$CustRes2015, na.rm=TRUE)," and ",sum(SCE_ctotpoly$ResCust, na.rm=TRUE)," for 2015 and 2017.")
+cat(" PG&E: We estimate that ",sum(PGE_ctotpoly$totpop_ctot, na.rm=TRUE)," people and ",sum(PGE_ctotpoly$tothh_ctot, na.rm=TRUE)," households are located in PG&E's territory. PG&E estimates their total customer base as ",sum(PGE_ctotpoly$CustTot, na.rm=TRUE),", and their residential customer base as ",sum(PGE_ctotpoly$ResCust, na.rm=TRUE),". Of these, we estimate that ",sum(PGE_ctotpoly$totpop_ctotICA, na.rm=TRUE)," people and ",sum(PGE_ctotpoly$tothh_ctotICA, na.rm=TRUE)," households are served by circuit line segments with ICA information.")
+```
+
+
+Validation graphs (Supplementary Figure S5(a))
+
+```{r}
+cols <- c("IOU","CircuitName","ResCust","tothh_ctot","Res_pct")
+df_PGE <- subset(PGE_ctotpoly[,cols], !is.na(ResCust))
+df_SCE <- subset(SCE_ctotpoly[,cols], !is.na(ResCust))
+
+lm_eqn_PGE <- function(df_PGE){ m <- lm(ResCust~tothh_ctot, data=df_PGE);
+  eq <- substitute(italic(y) == a + b %.% italic(x)*","~~italic(r)^2~"="~r2, 
+          list(a=format(coef(m)[1], digits=2), b=format(coef(m)[2], digits=2),
+          r2=format(summary(m)$r.squared, digits=3)))
+  as.character(as.expression(eq));}
+
+lm_eqn_SCE <- function(df_SCE){ m <- lm(ResCust~tothh_ctot, data=df_SCE);
+  eq <- substitute(italic(y) == a + b %.% italic(x)*","~~italic(r)^2~"="~r2, 
+          list(a=format(coef(m)[1], digits=2), b=format(coef(m)[2], digits=2),
+          r2=format(summary(m)$r.squared, digits=3)))
+  as.character(as.expression(eq));}
+
+ldata <- data.frame(label=c(lm_eqn_PGE(df_PGE), lm_eqn_SCE(df_SCE)), IOU=c("PGE","SCE"), x=c(2600,2600), y=c(6700,6700))
+  
+b <- rbind(df_PGE, df_SCE) %>%
+  ggplot(aes(x=tothh_ctot, y=ResCust, color=Res_pct)) + facet_grid(~IOU, labeller=labeller(IOU=c(PGE="PG&E", SCE="SCE"))) + 
+  geom_point(size=0.2, alpha=1) + theme_light() +
+  #scale_color_continuous_diverging(palette="Tofino", mid=50, l1=70, guide=guide_colourbar(barwidth=0.5, barheight=11)) +
+  scale_color_continuous_diverging(palette="Tofino", mid=50, l1=70, guide=guide_colourbar(barwidth=12, barheight=0.5)) +
+  scale_x_continuous(breaks=c(0,2000,4000,6000), labels=c("0","2,000","4,000","6,000"), limits=c(0,7200)) +
+  scale_y_continuous(breaks=c(0,2000,4000,6000), labels=c("0","2,000","4,000","6,000"), limits=c(0,7200)) +
+  #xlim(0,7200) + ylim(0,7200) + 
+  coord_fixed() + theme(legend.position="bottom") +
+  geom_abline(intercept=0, slope=1) + geom_smooth(method='lm') +
+  geom_text(data=ldata, aes(x=x, y=y, label=label), colour="black", parse=TRUE, size=3) +
+  labs(x="Estimated Total Number of Households", y="Utility-Reported Res. Customer Base", color="Res (%)") 
+b
+  
+#ggsave("IOU_ICAcirc19_ResCust_v_tothh_noNA.png", path="figures/", width=8, height=4)
+
+rm(ldata)
+```
+
+Supplementary Figure S5
+
+```{r}
+plot_grid(b, a, labels=c('a','b'), label_size=12, rel_widths=c(1.8,1), rel_heights=c(1,0.6))
+
+ggsave("IOU_cust.png", path="figures/", width=9, height=4)
+ggsave("IOU_cust.pdf", path="figures/", width=9, height=4)
+```
+
+
+--------------------------------------------------------------------------------------------
+
+SUBSETTING AND EXPORTING
+
+--------------------------------------------------------------------------------------------
+
+How much of the data contains unrealistic population totals?
+
+```{r}
+poptoosmall = sum(subset(SCE_ICAall, totpop_Cpoly < 1, c(totpop_Cpoly)))
+poptotal = sum(SCE_ICAall$totpop_Cpoly, na.rm=TRUE)
+cat("SCE: The sum of population in Cpolys where the total pop is less than 1 is ",poptoosmall,". The total population in the dataset is ",poptotal,". That's ",poptoosmall/poptotal," of the data. Alternatively, ",(poptotal - poptoosmall) / poptotal," remains after removal.")
+rm(poptoosmall)
+hhtoosmall = sum(subset(SCE_ICAall, tothh_Cpoly < 1, c(tothh_Cpoly)))
+hhtotal = sum(SCE_ICAall$tothh_Cpoly, na.rm=TRUE)
+cat(" The total number of households in Cpolys where the number of households is less than 1 is ",hhtoosmall,". The total number of households in the dataset is ",hhtotal,". That's ",hhtoosmall/hhtotal," of the data. Alternatively, ",(hhtotal - hhtoosmall) / hhtotal," remains after removal.")
+rm(hhtoosmall)
+
+poptoosmall = sum(subset(PGE_ICAall, totpop_Cpoly < 1, c(totpop_Cpoly)))
+poptotal = sum(PGE_ICAall$totpop_Cpoly, na.rm=TRUE)
+cat(" PGE: The sum of population in Cpolys where the total pop is less than 1 is ",poptoosmall,". The total population in the dataset is ",poptotal,". That's ",poptoosmall/poptotal," of the data. Alternatively, ",(poptotal - poptoosmall) / poptotal," remains after removal.")
+rm(poptoosmall)
+hhtoosmall = sum(subset(PGE_ICAall, tothh_Cpoly < 1, c(tothh_Cpoly)))
+hhtotal = sum(PGE_ICAall$tothh_Cpoly, na.rm=TRUE)
+cat(" The total number of households in Cpolys where the number of households is less than 1 is ",hhtoosmall,". The total number of households in the dataset is ",hhtotal,". That's ",hhtoosmall/hhtotal," of the data. Alternatively, ",(hhtotal - hhtoosmall) / hhtotal," remains after removal.")
+rm(hhtoosmall)
+```
+
+Subset to remove unrealistic population totals:
+
+```{r}
+SCE_ICAall_real = subset(SCE_ICAall, tothh_Cpoly >= 1)
+PGE_ICAall_real = subset(PGE_ICAall, tothh_Cpoly >= 1)
+```
+
+
+```{r}
+write.csv(PGE_cpolybg, file = "circuitfiles/PGE_cpolybg.csv", row.names=FALSE)
+write.csv(PGE_cpolybgICA, file = "circuitfiles/PGE_cpolybgICA.csv", row.names=FALSE)
+write.csv(PGE_ctotpoly, file = "circuitfiles/PGE_ctotpoly.csv", row.names=FALSE)
+write.csv(PGE_all, file = "circuitfiles/PGE_all.csv", row.names=FALSE)
+write.csv(PGE_ICAall, file = "circuitfiles/PGE_ICAall.csv", row.names=FALSE)
+write.csv(PGE_ICAall_real, file = "circuitfiles/PGE_ICAallreal.csv", row.names=FALSE)
+
+write.csv(SCE_cpolybg, file = "circuitfiles/SCE_cpolybg.csv", row.names=FALSE)
+write.csv(SCE_ctotpoly, file = "circuitfiles/SCE_ctotpoly.csv", row.names=FALSE)
+write.csv(SCE_ICAall, file = "circuitfiles/SCE_ICAall.csv", row.names=FALSE)
+write.csv(SCE_ICAall_real, file = "circuitfiles/SCE_ICAallreal.csv", row.names=FALSE)
+
+PGEtypesall <- sapply(PGE_all,class)
+PGEtypes <- sapply(PGE_ICAall,class)
+SCEtypes <- sapply(SCE_ICAall,class)
+
+write.csv(PGEtypesall, file = "circuitfiles/PGE_allclasses.csv", row.names=FALSE)
+write.csv(PGEtypes, file = "circuitfiles/PGE_ICAallclasses.csv", row.names=FALSE)
+write.csv(SCEtypes, file = "circuitfiles/SCE_ICAallclasses.csv", row.names=FALSE)
+```
+

@@ -1,0 +1,214 @@
+---
+title: "03_features"
+output: html_notebook
+---
+
+This notebook assembles and cleans features to be used in random forest runs.
+
+```{r}
+library(tidyverse)
+library(tictoc)
+library(reshape2)
+library(ggplot2)
+library(ggridges)
+library(stringr)
+library(tidytext)
+library(measurements) # https://cran.r-project.org/web/packages/measurements/measurements.pdf
+library(readxl)
+library(colorspace)
+library(Hmisc)
+library(facetscales)
+```
+
+
+```{r}
+SCEtypes = read.csv("circuitfiles/SCE_ICAallclasses.csv", header=T, na.strings="?")
+SCE_ICAall = read.csv("circuitfiles/SCE_ICAall.csv", header=T, na.strings="?", colClasses=as.character(SCEtypes$x))
+
+PGEtypes = read.csv("circuitfiles/PGE_ICAallclasses.csv", header=T, na.strings="?")
+PGE_ICAall = read.csv("circuitfiles/PGE_ICAall.csv", header=T, na.strings="?", colClasses=as.character(PGEtypes$x))
+
+PGEtypesall = read.csv("circuitfiles/PGE_allclasses.csv", header=T, na.strings="?")
+PGE_all = read.csv("circuitfiles/PGE_all.csv", header=T, na.strings="?", colClasses=as.character(PGEtypesall$x))
+```
+
+--------------------------------------------------------------------------------------------
+
+COUNTIES
+
+--------------------------------------------------------------------------------------------
+
+CHECK: do the counties line up?
+
+```{r}
+unique(select(SCE_ICAall, CountyId, county))
+unique(select(PGE_ICAall, CountyId, county))
+unique(select(PGE_all, CountyId, county))
+```
+
+Yes! And we can fix the NAs:
+
+```{r}
+SCE_ICAall$county[SCE_ICAall$CountyId==37] <- "Los Angeles"
+SCE_ICAall$county[SCE_ICAall$CountyId==59] <- "Orange"
+SCE_ICAall$county[SCE_ICAall$CountyId==83] <- "Santa Barbara"
+SCE_ICAall$county[SCE_ICAall$CountyId==111] <- "Ventura"
+
+PGE_ICAall$county[PGE_ICAall$CountyId==13] <- "Contra Costa"
+PGE_ICAall$county[PGE_ICAall$CountyId==83] <- "Santa Barbara"
+
+PGE_all$county[PGE_all$CountyId==13] <- "Contra Costa"
+PGE_all$county[PGE_all$CountyId==83] <- "Santa Barbara"
+
+unique(select(SCE_ICAall, CountyId, county))
+unique(select(PGE_ICAall, CountyId, county))
+unique(select(PGE_all, CountyId, county))
+nrow(unique(select(PGE_ICAall, CountyId, county)))
+```
+
+
+--------------------------------------------------------------------------------------------
+
+DENSITY
+
+--------------------------------------------------------------------------------------------
+
+Calculate household density
+
+```{r}
+SCE_ICAalldemo <- SCE_ICAall %>%
+  mutate(hhdensity_hhsqkm = tothh_Cpoly/(CpolyA*conv_unit(1,"m2","km2"))) %>%
+  mutate(hhdensity_log = log10(hhdensity_hhsqkm))
+
+PGE_ICAalldemo <- PGE_ICAall %>%
+  mutate(hhdensity_hhsqkm = tothh_Cpoly/(CpolyA*conv_unit(1,"m2","km2"))) %>%
+  mutate(hhdensity_log = log10(hhdensity_hhsqkm))
+
+PGE_alldemo <- PGE_all %>%
+  mutate(hhdensity_hhsqkm = tothh_Cpoly/(CpolyA*conv_unit(1,"m2","km2"))) %>%
+  mutate(hhdensity_log = log10(hhdensity_hhsqkm))
+
+is.na(SCE_ICAalldemo) <- do.call(cbind,lapply(SCE_ICAalldemo, is.infinite))
+is.na(PGE_ICAalldemo) <- do.call(cbind,lapply(PGE_ICAalldemo, is.infinite))
+is.na(PGE_alldemo) <- do.call(cbind,lapply(PGE_alldemo, is.infinite))
+```
+
+
+--------------------------------------------------------------------------------------------
+
+DEMOGRAPHICS
+
+--------------------------------------------------------------------------------------------
+
+Demographic info, created via CensusDataAggregation.Rmd
+
+```{r}
+demotypes = read.csv("../demographics/bgCAcensusCESclasses.csv", header=T, na.strings="?")
+bgCAcensusCES = read.csv("../demographics/bgCAcensusCES.csv", header=T, na.strings="?", colClasses=as.character(demotypes$x))
+```
+
+```{r}
+demofeatures = c("GEOID10", "GEOIDCT", "inc50kbelow_pct", "inc150kplus_pct", 
+                 "medhhinc", "racediversity", "black_pct", "asian_pct", "nlxwhite_pct", "latinx_pct", 
+                 "edavgyrs", "ownerocc_pct", "singleunit_pct", "unitsavg", "medyrbuilt", 
+                 "polexposure_pctl", "polenvt_pctl", "popsens_pctl", "lingisolation_pctl", "sb535disad")
+
+SCE_ICAalldemo <- SCE_ICAalldemo %>% merge(bgCAcensusCES[, demofeatures], by="GEOID10", all.x=TRUE) %>% unique()
+PGE_ICAalldemo <- PGE_ICAalldemo %>% merge(bgCAcensusCES[, demofeatures], by="GEOID10", all.x=TRUE) %>% unique()
+PGE_alldemo <- PGE_alldemo %>% merge(bgCAcensusCES[, demofeatures], by="GEOID10", all.x=TRUE) %>% unique()
+```
+
+Subset to remove unrealistic population totals:
+
+```{r}
+SCE_ICAalldemo_real = subset(SCE_ICAalldemo, tothh_Cpoly >= 1)
+PGE_ICAalldemo_real = subset(PGE_ICAalldemo, tothh_Cpoly >= 1)
+PGE_alldemo_real = subset(PGE_alldemo, tothh_Cpoly >= 1)
+```
+
+
+```{r}
+write.csv(PGE_ICAalldemo, file = "circuitfiles/PGE_ICAalldemo.csv", row.names = FALSE)
+write.csv(PGE_ICAalldemo_real, file = "circuitfiles/PGE_ICAalldemoreal.csv", row.names = FALSE)
+
+write.csv(PGE_alldemo, file = "circuitfiles/PGE_alldemo.csv", row.names = FALSE)
+#write.csv(PGE_alldemo_real, file = "circuitfiles/PGE_alldemoreal.csv", row.names = FALSE)
+
+write.csv(SCE_ICAalldemo, file = "circuitfiles/SCE_ICAalldemo.csv", row.names = FALSE)
+write.csv(SCE_ICAalldemo_real, file = "circuitfiles/SCE_ICAalldemoreal.csv", row.names = FALSE)
+
+PGEtypes <- sapply(PGE_ICAalldemo,class)
+SCEtypes <- sapply(SCE_ICAalldemo,class)
+
+write.csv(PGEtypes, file = "circuitfiles/PGE_ICAalldemoclasses.csv", row.names=FALSE)
+write.csv(SCEtypes, file = "circuitfiles/SCE_ICAalldemoclasses.csv", row.names=FALSE)
+```
+
+
+Visualizations (Supplementary Figure S6)
+
+```{r}
+demof = c("medhhinc","inc50kbelow_pct","inc150kplus_pct","racediversity",
+          "nlxwhite_pct","black_pct","latinx_pct","asian_pct",
+          "ownerocc_pct","singleunit_pct","unitsavg","medyrbuilt",
+          "polexposure_pctl","polenvt_pctl","popsens_pctl","lingisolation_pctl",
+          "edavgyrs","tothh","hhdensity_hhsqkm" )
+
+cols = c("GEOID10","CircuitName","IOU","tothh_Cpoly",demof)
+
+demovizPGE <- PGE_ICAalldemo_real[,cols]
+demovizPGEall <- PGE_alldemo_real[,cols] %>% mutate(IOU = "PGEall")
+demovizSCE <- SCE_ICAalldemo_real[,cols]
+
+perc = c(0.1,0.25,0.5,0.75,0.9)
+
+demovizPGEq <- as.data.frame(sapply(demovizPGE[,demof], wtd.quantile, probs=perc, weight=demovizPGE$tothh_Cpoly, na.rm=TRUE))
+demovizPGEq <- cbind(rownames(demovizPGEq), data.frame(demovizPGEq, row.names=NULL))
+colnames(demovizPGEq)[1] <- "Percentile"
+demovizPGEq <- mutate(demovizPGEq, IOU="PGE")
+
+demovizPGEallq <- as.data.frame(sapply(demovizPGEall[,demof], wtd.quantile, probs=perc, weight=demovizPGEall$tothh_Cpoly, na.rm=TRUE))
+demovizPGEallq <- cbind(rownames(demovizPGEallq), data.frame(demovizPGEallq, row.names=NULL))
+colnames(demovizPGEallq)[1] <- "Percentile"
+demovizPGEallq <- mutate(demovizPGEallq, IOU="PGEall")
+
+demovizSCEq <- as.data.frame(sapply(demovizSCE[,demof], wtd.quantile, probs=perc, weight=demovizSCE$tothh_Cpoly, na.rm=TRUE))
+demovizSCEq <- cbind(rownames(demovizSCEq), data.frame(demovizSCEq, row.names=NULL))
+colnames(demovizSCEq)[1] <- "Percentile"
+demovizSCEq <- mutate(demovizSCEq, IOU="SCE")
+
+demovizq <- rbind(demovizPGEq, demovizPGEallq, demovizSCEq) %>% melt(id=c("Percentile","IOU")) %>% 
+  mutate(IOU = factor(IOU, levels=c("PGE","PGEall","SCE")), variable = factor(variable, levels=demof)) %>%
+  mutate(value = ifelse(str_sub(variable,-4,-1)=="_pct",value*100,value))
+
+demoviz <- rbind(demovizPGE, demovizPGEall, demovizSCE) %>% melt(id=c("GEOID10","CircuitName","IOU","tothh_Cpoly")) %>%
+  mutate(IOU = factor(IOU, levels=c("PGE","PGEall","SCE")), variable = factor(variable, levels=demof)) %>%
+  mutate(value = ifelse(str_sub(variable,-4,-1)=="_pct",value*100,value))
+
+ggplot(demoviz, aes(y=value)) + theme_light() + facet_wrap(~variable, scales="free_y", ncol=4) +
+  stat_density(data=subset(demoviz, IOU=="PGE"), aes(x=-..scaled.., y=value, weight=tothh_Cpoly, fill=IOU), alpha=0.3, adjust=1/2) +
+  stat_density(data=subset(demoviz, IOU=="PGEall"), aes(x=-..scaled.., y=value, weight=tothh_Cpoly, fill=IOU), alpha=0.3, adjust=1/2) +
+  stat_density(data=subset(demoviz, IOU=="SCE"), aes(x=..scaled.., y=value, weight=tothh_Cpoly, fill=IOU), alpha=0.3, adjust=1/2) +
+  geom_segment(data=subset(demovizq, IOU=="PGE"), aes(x=-0.25, xend=0, y=value, yend=value, color=IOU), inherit.aes=FALSE) +
+  geom_segment(data=subset(demovizq, IOU=="PGEall"), aes(x=-0.25, xend=0, y=value, yend=value, color=IOU), inherit.aes=FALSE) +
+  geom_segment(data=subset(demovizq, IOU=="SCE"), aes(x=0, xend=0.25, y=value, yend=value, color=IOU), inherit.aes=FALSE) +
+  geom_vline(xintercept=0) + theme(legend.position="bottom") +
+  #scale_fill_manual(values = c("≥"="forestgreen", "<"="indianred3")) +
+  #scale_color_discrete_sequential(palette="Grays", nmax=7, order=3:7) +
+  scale_color_manual(values=c("PGE"="coral3", "PGEall"="forestgreen", "SCE"="dodgerblue4"), 
+                     labels=c("PG&E, ICA data available", "PG&E, full territory", "SCE")) +
+  scale_fill_discrete(labels=c("PG&E, ICA data available", "PG&E, full territory", "SCE")) +
+  scale_x_continuous(breaks=c(-1.0,-0.5,0.0,0.5,1.0), labels=c("1","0.5","0","0.5","1")) +
+  guides(fill = guide_legend(override.aes=list(alpha=0.3))) +
+  labs(x="Relative density of households", y="Demographic variable", fill="IOU")
+  
+ggsave("IOU_demo_wrap.png", path="figures/", width=12, height=8)
+ggsave("IOU_demo_wrap.pdf", path="figures/", width=12, height=8)
+
+rm(demovizSCE, demovizPGE, demovizPGEall, demovizSCEq, demovizPGEq, demovizPGEallq, demoviz, demovizq, demovizall, demovizmelt)
+```
+
+
+
+
+

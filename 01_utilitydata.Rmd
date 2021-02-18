@@ -1,0 +1,303 @@
+---
+title: "01_utilitydata"
+output: html_notebook
+---
+
+This notebook pulls in circuit and line data from PG&E and SCE and summarizes it.
+
+```{r}
+library(tidyverse)
+library(tictoc)
+library(reshape2)
+library(ggplot2)
+library(stringr)
+library(tidytext)
+library(measurements) # https://cran.r-project.org/web/packages/measurements/measurements.pdf
+library(readxl)
+library(colorspace)
+```
+
+
+--------------------------------------------------------------------------------------------
+
+CIRCUIT CHARACTERISTICS
+
+--------------------------------------------------------------------------------------------
+
+These data files are specific to the download date, so the versions used in this project are available in this repository.
+
+```{r}
+SCE_custtype <- read.csv("../IOUdata/SCE/rawdata/2019-09-18/Customer_Type_Breakdown.csv", header=T, na.strings="?", 
+                         colClasses = c("character", rep("numeric",9), rep("character",3), "integer", "numeric"))
+
+PGE_circcust <- read.csv("../IOUdata/PGE/PGE_download_20200216/ICADisplay_shp/FeederDetail_CalAlbers.csv",  header=T, na.strings="?", colClasses=c("integer", "character", "integer", rep("character",2), "factor", rep("integer",5), rep("numeric",3), "integer", rep("numeric",3), "integer", rep("numeric",5)))
+```
+
+This section of code generates Supplementary Figure S5(b)
+
+```{r}
+labs=c('SCE'="SCE", 'PG&E'="PG&E", 
+       'Res_pct'="Res.", 'Com_pct'="Comm.", 'Ind_pct' = "Ind.", 'Agr_pct'="Ag.", 'Oth_pct'="Other")
+
+SCE_cust <- SCE_custtype %>%
+  dplyr::rename("CircuitName"="CIRCUIT_NA", "CircVolt_kV"="CIRCUIT_VO", "Agr_pct"="AGR_PCT", "Com_pct"="COM_PCT", 
+                "Ind_pct"="IND_PCT", "Res_pct"="RES_PCT", "Oth_pct"="OTHER_PCT") %>%
+  select(CircuitName, CircVolt_kV, Agr_pct, Com_pct, Ind_pct, Res_pct, Oth_pct) %>%
+  mutate(IOU = "SCE")
+
+PGE_cust <- PGE_circcust %>%
+  dplyr::rename("CircuitName"="Feeder_Nam", "CircVolt_kV"="VOLTNUM") %>%
+  select(CircuitName, CircVolt_kV, Agr_pct, Com_pct, Ind_pct, Res_pct, Oth_pct) %>%
+  mutate(Agr_pct=Agr_pct*100, Com_pct=Com_pct*100, Ind_pct=Ind_pct*100, Res_pct=Res_pct*100, Oth_pct=Oth_pct*100) %>%
+  mutate(IOU = "PG&E")
+
+IOU_cust <- rbind(SCE_cust, PGE_cust)
+rm(SCE_cust, PGE_cust)
+
+a <- IOU_cust %>%
+  mutate(IOU = factor(IOU, levels=c("PG&E","SCE")),
+         CircuitName = reorder_within(CircuitName, desc(Res_pct), IOU)) %>%
+  melt( id=c("IOU","CircuitName","CircVolt_kV")) %>%
+  mutate(value = as.numeric(value),
+         variable = fct_relevel(variable, "Res_pct", "Com_pct", "Ind_pct", "Agr_pct", "Oth_pct")) %>% 
+  ggplot( aes(x=CircuitName, y=value)) + theme_light() +
+    facet_grid(variable~IOU, labeller=as_labeller(labs), scales="free_x", space="fixed") + 
+    geom_segment(aes(x=CircuitName, xend=CircuitName, y=0, yend=value), size=0.2) +
+    scale_x_discrete(labels=NULL, breaks=NULL) + #theme(legend.position="bottom") +
+    labs(x="Circuit", y="Customer type (%)")
+a
+
+ggsave("IOU_custtype.png", path = "figures/", width=4, height=4)
+```
+
+```{r}
+write.csv(IOU_cust, file = "circuitfiles/IOU_cust.csv", row.names = FALSE)
+```
+
+
+--------------------------------------------------------------------------------------------
+
+SUBSTATIONS
+
+--------------------------------------------------------------------------------------------
+
+Substation files used in this project are also provided in this repository.
+
+```{r}
+SCE_subs = read.csv("../IOUdata/SCE/rawdata/2019-12-20/Substations.csv", header=T, na.strings="?", 
+                    colClasses = c(rep("numeric",2), "integer", rep("factor",4), rep("numeric",6), "factor", "integer"))
+
+SCE_subs <- SCE_subs %>%
+  dplyr::rename("SubstId"="SUBST_ID", "Substation"="SUB_NAME", "System"="SYS_NAME", "Subst_type"="SUB_TYPE",
+                "Subst_kV"="SUBSTATION_VOLTAGE", "ExistGen_MW"="EXISTING_GEN", "QueueGen_MW"="QUEUED_GEN",
+                "TotalGen_MW"="TOTAL_GEN", "ProjLoad_MW"="PROJECTED_LOAD", "CurrPen_pct"="PENETRATION_LEVEL",
+                "MxRemGen_MW"="MAX_REMAIN_CAP", "DelivNote"="NOTE", "ObjectId"="OBJECTID")
+
+levels(SCE_subs$DelivNote)
+levels(SCE_subs$DelivNote)[1] <- "Undetermined"
+levels(SCE_subs$DelivNote)[2] <- "Adequate"
+levels(SCE_subs$DelivNote)[3] <- "Inadequate"
+levels(SCE_subs$DelivNote)
+```
+
+```{r}
+PGE_subs = read.csv("../IOUdata/PGE/data_2019/Substations/Substations_CalAlbers.csv", header=T, na.strings="?", 
+                    colClasses=c("integer", "character", "integer", rep("numeric",3), "factor", "integer", "factor"))
+
+# The Local Area Capacity Substation List is used to match substations to divisions
+
+PGE_subslcr = read.csv("../IOUdata/PGE/system/lcr-substation-list_2019-12.csv", header=T, na.strings="?")
+
+# SAIDI data for PG&E by division is pulled from the utility's annual electric distribution reliability report. We use the data reported in Table 3a because it is most inclusive of outages.
+
+PGE_div3a = read.csv("../IOUdata/PGE/system/AnnualElectricDistributionReliabilityReport2018_10yrdata_3a.csv", header=T, na.strings="?")
+
+PGE_div <- PGE_div3a %>%
+  filter(Year==2012 | Year==2013 | Year==2014 | Year==2015 | Year==2016) %>% group_by(Division) %>%
+  summarise(SAIDI3a5yravg = mean(SAIDI, na.rm=TRUE), SAIFI3a5yravg = mean(SAIFI, na.rm=TRUE),
+            MAIFI3a5yravg = mean(MAIFI, na.rm=TRUE), CAIDI3a5yravg = mean(CAIDI, na.rm=TRUE))
+
+PGE_subslcr <- PGE_subslcr %>%
+  dplyr::rename("Substation"="SAP.Substation.Name", "LCRarea"="LCR.Area", "City"="City.served") %>%
+  select(c("Substation","LCRarea","Division","Owner")) %>%
+  mutate(Substation = str_sub(Substation, end=-5)) %>% unique()
+
+# Dixon landing has two entries for divisions, we remove these here and set division to prevent double-counting later
+# The original two entries are MISSION and SAN JOSE, we choose MISSION here (randomly)
+PGE_subslcr[PGE_subslcr$Substation=="DIXON LANDING", c('Division')] <- "MISSION"
+  
+PGE_subslcr <- PGE_subslcr %>% unique() %>%
+  merge(PGE_div, by="Division", all.x=TRUE) %>% unique()
+
+summary(PGE_subslcr)
+
+PGE_subs <- PGE_subs %>%
+  dplyr::rename("Substation"="SUBNAME", "SubstId"="SUBSTATION", "Min_kV"="MIN_KV", "Max_kV"="MAX_KV",
+                "N_banks"="NUMBANKS", "Redacted"="REDACTED", "ObjectId"="OBJECTID", "Ungrounded"="UNGROUNDED") %>%
+  merge(PGE_subslcr, by="Substation", all.x=TRUE)
+```
+
+```{r}
+write.csv(SCE_subs, file = "circuitfiles/SCE_subs.csv", row.names=FALSE)
+write.csv(PGE_subs, file = "circuitfiles/PGE_subs.csv", row.names=FALSE)
+write.csv(PGE_subslcr, file = "circuitfiles/PGE_subslcr.csv", row.names=FALSE)
+write.csv(PGE_div, file="circuitfiles/PGE_div.csv", row.names=FALSE)
+
+rm(PGE_subslcr)
+```
+
+
+--------------------------------------------------------------------------------------------
+
+IMPORTING CIRCUIT LINE DATA
+
+--------------------------------------------------------------------------------------------
+
+The core circuit data sets used for SCE and PG&E are in files too large to upload to Github. They can be accessed via Box links (see readme).
+
+Circuit lines
+
+```{r}
+SCE_circ = read.csv("../IOUdata/SCE/data_2019/ICA_Circuit_Segments/ICA__Circuit_Segments_CA_Res.csv", header=T, na.strings="?", colClasses = c("integer", "character", rep("integer",4), "numeric", rep("character",3), rep("numeric",5), "factor", "character", "integer", rep("numeric",2), "character", rep("numeric",8)))
+
+SCE_RAM = read.csv("../IOUdata/SCE/rawdata/2019-12-20/RAM__Circuits.csv", header=T, na.strings="?", colClasses = c("character", "character", rep("numeric",7), "factor", "integer", "character", "numeric", "character", "integer", "numeric"))
+
+SCE_circ <- SCE_circ %>%
+  dplyr::rename("CircuitNum"="FID", "CircuitName"="CIRCUIT_NA", "SectionId"="SECTION_ID", "NodeId"="NODE_ID", 
+                "Phase"="PHASE", "LineSeg"="LINE_SEGME", "CircVolt_kV"="CIRCUIT_VO", "Substation"="SUBSTATION", 
+                "Subst_kV"="SUBSTATI_1", "System"="SYSTEM_NAM", "ICL_MW"="ICA_OVERAL", "ICPVOF_MW"="ICA_OVER_1", 
+                "ICPV_MW"="ICA_OVER_2", "ICUGOF_MW"="UNIFORM_GE", "ICUG_MW"="UNIFORM__1", "Note"="NOTE", 
+                "DwnldLink"="DOWNLOAD_L", "ObjectId"="OBJECTID", "ShapeLen"="Shape__Len", "Length_m"="Length_m",
+                "CircName"="CIRCUIT__1", "Agr_pct"="AGR_PCT", "Com_pct"="COM_PCT", "Ind_pct"="IND_PCT", 
+                "Res_pct"="RES_PCT", "Oth_pct"="OTHER_PCT", 
+                "ExistDG"="GEN_ALLOC", "QueueDG"="GEN_QUE", "TotalDG"="TOTAL_GEN") %>%
+  mutate(CircuitName = toupper(CircuitName))
+
+SCE_RAM <- SCE_RAM %>%
+  dplyr::rename("Subst_kV"="SUBSTATION_VOLTAGE", "System"="SYS_NAME", 
+                "ExistGen_MW"="EXISTING_GEN", "QueueGen_MW"="QUEUED_GEN", "TotalGen_MW"="TOTAL_GEN",
+                "ProjLoad_MW"="PROJECTED_LOAD", "CurrPen_Pct"="PENETRATION_LEVEL", "MxRemGen_MW"="MAX_REMAIN_CAP",
+                "x15PenCp_MW"="PERCENT_15_CAP", "DelivNote"="NOTE", "CircuitId"="CIRCUIT_ID", 
+                "CircuitName"="CIRCUIT_NAME", "CircVolt_kV"="CIRCUIT_VOLTAGE", "Substation"="SUB_NAME",
+                "ObjectId"="OBJECTID", "ShapeLen"="Shape__Length") %>%
+  mutate(CircuitName = toupper(CircuitName))
+
+SCE_circ <- merge(SCE_circ, SCE_RAM[ , c("CircuitName", "Substation", "ExistGen_MW", "QueueGen_MW", "TotalGen_MW", 
+                                         "ProjLoad_MW", "CurrPen_Pct", "MxRemGen_MW", "x15PenCp_MW", "DelivNote")], 
+                  by = c("CircuitName","Substation"), all.x = TRUE)
+
+# Update text for deliverability note:
+summary(SCE_circ$DelivNote)
+SCE_circ$DelivNote <- factor(SCE_circ$DelivNote)
+levels(SCE_circ$DelivNote)
+levels(SCE_circ$DelivNote)[1] <- "Undetermined"
+levels(SCE_circ$DelivNote)[2] <- "Adequate"
+levels(SCE_circ$DelivNote)[3] <- "Inadequate"
+levels(SCE_circ$DelivNote)
+
+# how many circuits don't have a match? none!
+nrow(subset(SCE_circ, is.na(ExistGen_MW)))
+```
+
+```{r}
+PGE_circ = read.csv("../IOUdata/PGE/data_2019/ICA_Circuit_Segments/LineDetail_CA_Res.csv", header=T, na.strings="?", colClasses = c(rep("integer",2), rep("character",2), "integer", "character", rep("numeric",7), "integer", "character", "integer", "character", rep("factor",2), rep("numeric",8), "integer", rep("numeric",9)))
+
+PGE_circ <- PGE_circ %>%
+  dplyr::rename("CircuitNum"="FID", "CircuitId"="LineDetail", "CircuitName"="LineDeta_1", "GlobalId"="LineDeta_2",
+                "LineSegId"="LineDeta_3", "ICAanalysis"="LineDeta_4", "ICL_kW"="LineDeta_5", "UGOF_kW"="LineDeta_6",
+                "PVOF_kW"="LineDeta_7", "UG_kW"="LineDeta_8", "PV_kW"="LineDeta_9", 
+                "ShapeLen"="LineDet_10", "Length_m"="LineDet_11", 
+                "FeederNum"="FeederDeta", "Substation"="FeederDe_1", "FeederId"="FeederDe_2", "CircName"="FeederDe_3",
+                "Nominal_kV"="FeederDe_4", "LoadProfile"="FeederDe_5", 
+                "ResCust"="FeederDe_6", "ComCust"="FeederDe_7", "IndCust"="FeederDe_8", "AgrCust"="FeederDe_9", 
+                "OthCust"="FeederD_10", "ExistDG"="FeederD_11", "QueueDG"="FeederD_12", "TotalDG"="FeederD_13",
+                "Show"="FeederD_14", "CircVolt_kV"="FeederD_15", "ShapeLenCtot"="FeederD_16", "LenCtot_m"="FeederD_17", 
+                "CustTot"="FeederD_18", "Res_pct"="FeederD_19", "Com_pct"="FeederD_20", "Ind_pct"="FeederD_21", 
+                "Agr_pct"="FeederD_22", "Oth_pct"="FeederD_23") %>%
+  mutate(Agr_pct=Agr_pct*100, Com_pct=Com_pct*100, Ind_pct=Ind_pct*100, Res_pct=Res_pct*100, Oth_pct=Oth_pct*100)
+```
+
+```{r}
+SCE_circj <- SCE_circ %>% mutate(IOU="SCE") %>% 
+  select(c("IOU","CircuitName","Substation","CircVolt_kV","Res_pct","ICL_MW","ICPVOF_MW","ICPV_MW","ICUGOF_MW","ICUG_MW"))
+PGE_circj <- PGE_circ %>% mutate(IOU="PGE") %>%
+  mutate(ICL_MW=ICL_kW/1000, ICPVOF_MW=PVOF_kW/1000, ICPV_MW=PV_kW/1000, ICUGOF_MW=UGOF_kW/1000, ICUG_MW=UG_kW/1000) %>%
+  select(c("IOU","CircuitName","Substation","CircVolt_kV","Res_pct","ICL_MW","ICPVOF_MW","ICPV_MW","ICUGOF_MW","ICUG_MW"))
+
+IOU_circ <- rbind(PGE_circj, SCE_circj) %>% mutate(IOU = factor(IOU, levels=c("PGE","SCE"))) %>%
+  melt(id=c("IOU","CircuitName","Substation","CircVolt_kV","Res_pct")) %>%
+  mutate(variable = factor(sapply(strsplit(as.character(variable), "_"), function(x) x[1]), 
+                           levels=c("ICL","ICPVOF","ICPV","ICUGOF","ICUG")))
+
+```
+
+
+
+
+Additional circuit data from other sources
+--------------------------------------------------------------------------------------------
+
+SCE CUSTOMER AND RELIABILITY DATA: CircuitNum in these data sets is internally consistent, but not consistent with CircuitNum used in the circuits files to this point. The files should be matched based on CircuitName.
+
+```{r}
+# Number of customers per circuit
+SCE_circcust = read_excel("../IOUdata/Sloanproject/New_Circuit_Data/2012-2017CircuitCustomerBase.xlsx", sheet=1, na="NA")
+names(SCE_circcust) <- c("Year", "CircuitNo", "CircuitNum", "CircuitName", "CustBase")
+
+# SAIDI, major event days (MED) excluded, data as of 11/7/2017
+# (Note: Circuit SAIDI may be understated when outages occur on circuits in abnormal alignments. i.e. when portions of a circuit are being fed from other than its normal source substation.)
+SCE_circSAIDI = read_excel("../IOUdata/Sloanproject/New_Circuit_Data/2007-2016CircuitSAIDI.xlsx", sheet=1, skip=2, na="NA")
+names(SCE_circSAIDI) <- c("CircuitNum", "CircuitName", "2007","2008","2009","2010","2011","2012","2013","2014","2015","2016")
+```
+
+```{r}
+SCE_circSAIDI <- as.data.frame(SCE_circSAIDI)
+class(SCE_circSAIDI); summary(SCE_circSAIDI)
+```
+
+
+Comparing population totals for circuits with Sloan reliability data and adding SAIDI:
+
+```{r}
+SCE_circ <- SCE_circ %>%
+  mutate(CircuitName = toupper(CircuitName)) %>%
+  merge( filter(SCE_circcust, Year==2015)[ , c("CircuitName", "CustBase")], by="CircuitName", all.x=TRUE) %>%
+  dplyr::rename("CustBase2015"="CustBase") %>%
+  merge( filter(SCE_circcust, Year==2017)[ , c("CircuitName", "CustBase")], by="CircuitName", all.x=TRUE) %>%
+  dplyr::rename("CustBase2017"="CustBase") %>%
+  mutate(CustRes2015 = CustBase2015 * Res_pct /100,
+         CustRes2017 = CustBase2017 * Res_pct /100) %>%
+  merge( SCE_circSAIDI[ , c("CircuitName", "2015")], by="CircuitName", all.x=TRUE) %>%
+  dplyr::rename("SAIDI2015"="2015")
+
+# how many circuit segments don't have a match?
+nrow(subset(SCE_circ, is.na(CustBase2015)))
+nrow(subset(SCE_circ, is.na(CustBase2017)))
+```
+
+Writing files
+
+```{r}
+write.csv(PGE_circ, file="circuitfiles/PGE_circ.csv", row.names=FALSE)
+write.csv(SCE_circ, file="circuitfiles/SCE_circ.csv", row.names=FALSE)
+write.csv(SCE_RAM, file="circuitfiles/SCE_RAM.csv", row.names=FALSE)
+
+write.csv(SCE_circSAIDI, file="circuitfiles/SCE_circSAIDI.csv", row.names=FALSE)
+```
+
+```{r}
+summary(SCE_circ)
+summary(as.factor(SCE_circ$Substation))
+summary(as.factor(SCE_circ$CircVolt_kV))
+summary(as.factor(SCE_circ$Subst_kV))
+summary(as.factor(SCE_circ$System))
+```
+
+```{r}
+summary(PGE_circ)
+summary(as.factor(PGE_circ$Substation))
+summary(as.factor(PGE_circ$CircVolt_kV))
+summary(as.factor(PGE_circ$Subst_kV))
+summary(as.factor(PGE_circ$System))
+```
+

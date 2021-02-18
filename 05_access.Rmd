@@ -1,0 +1,906 @@
+---
+title: "05_access"
+output: html_notebook
+---
+
+This notebook calculates grid access for households in PG&E and SCE service territories
+
+```{r}
+library(tidyverse)
+library(tictoc)
+library(reshape2)
+library(ggplot2)
+library(stringr)
+library(tidytext)
+library(measurements) # https://cran.r-project.org/web/packages/measurements/measurements.pdf
+library(readxl)
+library(colorspace)
+library(cowplot)
+```
+
+```{r}
+SCEtypes = read.csv("circuitfiles/SCE_ICAalldemoallocclasses.csv", header=T, na.strings="?")
+SCE_ICAaccess = read.csv("circuitfiles/SCE_ICAalldemoalloc.csv", header=T, na.strings="?", colClasses=as.character(SCEtypes$x))
+
+PGEtypes = read.csv("circuitfiles/PGE_ICAalldemoallocclasses.csv", header=T, na.strings="?")
+PGE_ICAaccess = read.csv("circuitfiles/PGE_ICAalldemoalloc.csv", header=T, na.strings="?", colClasses=as.character(PGEtypes$x))
+
+at <- c("1.5", "2.0", "3.0", "4.0", "4.5", "5.0", "6.0", "7.0", "8.0", "9.0", "10.")
+```
+
+
+--------------------------------------------------------------------------------------------
+
+GRID LIMITS
+
+--------------------------------------------------------------------------------------------
+
+```{r}
+plotops_bggrid = list(
+  theme_light(), facet_grid(IOU~DER, scales="free_x", space='free_x', labeller=labeller(IOU=labsIOU, DER=labsDER)),
+  geom_boxplot(aes(fill=threshold), alpha=1, width=0.9), scale_fill_discrete_sequential(palette="Mint", nmax=11, order=1:11), 
+  theme(axis.text.x=element_blank(), axis.ticks.x=element_blank(), legend.position="bottom"), guides(fill=guide_legend(nrow=1)), 
+  scale_y_continuous(limits=c(0,1), breaks=c(0,0.2,0.4,0.6,0.8,1), labels=scales::percent_format(accuracy=1)), 
+  labs(x="", y="Portion of households with access, by block group", fill="Access threshold (kW)"))
+
+plotops_allgrid = list(theme_light(), facet_grid(IOU~., labeller=labeller(IOU=labsIOU)),
+  geom_line(), geom_point(size=2), 
+  theme(legend.position="bottom", legend.margin=margin(), legend.text=element_text(size=8), axis.text.x=element_text(size=7)),
+  guides(shape=guide_legend(nrow=4,title.position="top")),
+  scale_y_continuous(limits=c(0,1), breaks=c(0,0.2,0.4,0.6,0.8,1), labels=scales::percent_format(accuracy=1)),
+  scale_x_continuous(breaks=c(0,as.numeric(at)), labels=c(">0","1.5","2","3","4","4.5","5","6","7","8","9","10")),
+  scale_color_discrete_sequential(palette="Viridis", nmax=5, order=5:2),
+  labs(x="Access threshold (kW)", y="Portion of households with access", shape="DER type", color="Limit type"))
+```
+
+Remaining only 
+
+For each DER type, we calculate the number of households with access based on grid limits, with "access" defined as all households having ability to host between 1.5 and 10 kW of PV.
+
+```{r}
+for (j in c("ICL","ICPVOF","ICPV","ICUGOF","ICUG")){
+
+  SCE_ICAaccess[[paste0("hhwacc_gr_0_",j,"_pct")]] <- ifelse(SCE_ICAaccess[[paste0(j,"_kWphh")]]>0, 1, 0)
+  PGE_ICAaccess[[paste0("hhwacc_gr_0_",j,"_pct")]] <- ifelse(PGE_ICAaccess[[paste0(j,"_kWphh")]]>0, 1, 0)
+
+  for (t in 1:length(at)) { name <- paste0("hhwacc_gr_",at[t],"_",j,"_pct") # grid limits, pct
+  
+    SCE_ICAaccess[[name]] <- ifelse(SCE_ICAaccess[[paste0(j,"_kWphh")]]>=as.numeric(at[t]), 1, SCE_ICAaccess[[paste0(j,"_kWphh")]]/as.numeric(at[t]))
+    SCE_ICAaccess[[paste0("hhwacc_gr_",at[t],"_",j)]] <- SCE_ICAaccess[[name]]*SCE_ICAaccess$tothh_Cpoly
+  
+    PGE_ICAaccess[[name]] <- ifelse(PGE_ICAaccess[[paste0(j,"_kWphh")]]>=as.numeric(at[t]), 1, PGE_ICAaccess[[paste0(j,"_kWphh")]]/as.numeric(at[t]))
+    PGE_ICAaccess[[paste0("hhwacc_gr_",at[t],"_",j)]] <- PGE_ICAaccess[[name]]*PGE_ICAaccess$tothh_Cpoly
+}}
+```
+
+Supplementary Figure S2
+Visualizing results... just grid limits
+
+```{r}
+IOU_ICAaccess_grid <- 
+  rbind(select(PGE_ICAaccess, IOU, tothh_Cpoly, GEOID10, intersect(starts_with("hhwacc_gr_"), ends_with("_pct"))),
+        select(SCE_ICAaccess, IOU, tothh_Cpoly, GEOID10, intersect(starts_with("hhwacc_gr_"), ends_with("_pct")))) %>%
+  melt(id=c("IOU", "tothh_Cpoly", "GEOID10")) %>%
+  mutate(hhwacc_Cpoly = value*tothh_Cpoly) %>%    # households per Cpoly, not percent
+  group_by(IOU, GEOID10, variable) %>%
+  summarise(avgacc_bg_pct = mean(value, na.rm=TRUE), # avg percent access in bg
+            tothh_bg = sum(tothh_Cpoly, na.rm=TRUE), # total number of households in block group
+            hhwacc_bg_pct = sum(hhwacc_Cpoly, na.rm=TRUE)/sum(tothh_Cpoly, na.rm=TRUE)) %>%
+  mutate(variable = as.character(variable),
+         threshold = sapply(strsplit(variable, "_"), function(x) x[3]),
+         threshold = factor(ifelse(threshold=="0",">0",threshold), levels=c(">0",at)),
+         limit = sapply(strsplit(variable, "_"), function(x) x[2]),
+         DER = factor(sapply(strsplit(variable, "_"), function(x) x[4]), levels=c("ICPV","ICPVOF","ICUG","ICUGOF","ICL")),
+         avgacc_bg_pct = as.numeric(avgacc_bg_pct))
+
+bg <- IOU_ICAaccess_grid %>% filter(!is.na(limit) | !is.na(hhwacc_bg_pct)) %>% 
+  ggplot( aes(x=limit, y=hhwacc_bg_pct)) + plotops_bggrid
+bg
+
+#ggsave("figures/access/IOU_accessbg_gr.png", width=8.5, height=6)
+#ggsave("figures/access/IOU_accessbg_gr.pdf", width=8.5, height=6)
+IOU_accessbg_gr <- ggplot_build(bg)$data[[1]]
+
+IOU_hhwacc_grid <- IOU_ICAaccess_grid %>%
+  mutate(hhwacc_bg = hhwacc_bg_pct*tothh_bg) %>%
+  mutate(DER = recode(DER, 'ICPV'="PV", 'ICPVOF'="PV, with OpFlex", 'ICUG'="Uniform Gen.", 'ICUGOF'="Unif. Gen., w OF", 'ICL'="Load")) %>%
+  group_by(IOU, DER, limit, threshold) %>%
+  summarise(tothh = sum(tothh_bg, na.rm=TRUE),
+            avgacc_pct = mean(avgacc_bg_pct, na.rm=TRUE),
+            hhwacc_pct = sum(hhwacc_bg, na.rm=TRUE)/sum(tothh_bg, na.rm=TRUE)) %>%
+  mutate(threshold = as.numeric(ifelse(as.character(threshold)==">0","0",as.character(threshold))))
+
+all <- IOU_hhwacc_grid %>% ggplot( aes(x=threshold, y=hhwacc_pct, shape=DER)) + plotops_allgrid
+all
+
+#ggsave("figures/access/IOU_accessall_gr.png", width=3, height=6)
+#ggsave("figures/access/IOU_accessall_gr.pdf", width=3, height=6)
+
+plot_grid(all, bg, labels=c('a','b'), label_size=12, rel_widths=c(0.25,0.75), rel_heights=c(1,1))
+
+#ggsave("figures/access/IOU_access_gr.png", width=11.5, height=6)
+#ggsave("figures/access/IOU_access_gr.pdf", width=11.5, height=6)
+```
+
+
+Including existing DG
+
+...weighted by households
+
+```{r}
+for (j in c("ICL","ICPVOF","ICPV","ICUGOF","ICUG")){
+
+  SCE_ICAaccess[[paste0("hhwacc_ge_0_",j,"_pct")]] <- ifelse(SCE_ICAaccess[[paste0(j,"_e_kWphh")]]>0, 1, 0)
+  PGE_ICAaccess[[paste0("hhwacc_ge_0_",j,"_pct")]] <- ifelse(PGE_ICAaccess[[paste0(j,"_e_kWphh")]]>0, 1, 0)
+
+  for (t in 1:length(at)) { name <- paste0("hhwacc_ge_",at[t],"_",j,"_pct") # grid limits, pct
+  
+    SCE_ICAaccess[[name]] <- ifelse(SCE_ICAaccess[[paste0(j,"_e_kWphh")]]>=as.numeric(at[t]), 1, SCE_ICAaccess[[paste0(j,"_e_kWphh")]]/as.numeric(at[t]))
+    SCE_ICAaccess[[paste0("hhwacc_ge_",at[t],"_",j)]] <- SCE_ICAaccess[[name]]*SCE_ICAaccess$tothh_Cpoly
+  
+    PGE_ICAaccess[[name]] <- ifelse(PGE_ICAaccess[[paste0(j,"_e_kWphh")]]>=as.numeric(at[t]), 1, PGE_ICAaccess[[paste0(j,"_e_kWphh")]]/as.numeric(at[t]))
+    PGE_ICAaccess[[paste0("hhwacc_ge_",at[t],"_",j)]] <- PGE_ICAaccess[[name]]*PGE_ICAaccess$tothh_Cpoly
+}}
+```
+
+
+---> CODE TO NEXT ARROW WAS TESTING OTHER ALLOCATION METHODS, CAN OMIT
+
+...weighted by zip codes, from Tracking the Sun
+
+```{r}
+at <- c("1.5", "2.0", "3.0", "4.0", "5.0", "6.0", "7.0", "8.0", "9.0", "10.")
+
+for (t in 1:length(at)) { name <- paste0("hhwacc_",at[t],"_gr_Load_pct") # grid limits, pct
+  
+  SCE_ICAaccess[[name]] <- ifelse(SCE_ICAaccess$ICL_kWphh >= as.numeric(at[t]), 1, 
+                                  SCE_ICAaccess$ICL_max_hhWt_nadj*1000/as.numeric(at[t])/SCE_ICAaccess$tothh_Cpoly)
+  SCE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_Load")]] <- SCE_ICAaccess[[name]]*SCE_ICAaccess$tothh_Cpoly
+  
+  PGE_ICAaccess[[name]] <- ifelse(PGE_ICAaccess$ICL_kWphh >= as.numeric(at[t]), 1, 
+                                  PGE_ICAaccess$ICL_max_hhWt_nadj/as.numeric(at[t])/PGE_ICAaccess$tothh_Cpoly)
+  PGE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_Load")]] <- PGE_ICAaccess[[name]]*PGE_ICAaccess$tothh_Cpoly
+}
+
+for (t in 1:length(at)) { name <- paste0("hhwacc_",at[t],"_gr_PVOF_pct") # grid limits, pct
+  
+  SCE_ICAaccess[[name]] <- ifelse(SCE_ICAaccess$ICPVOF_z_kWphh >= as.numeric(at[t]), 1, 
+                                  SCE_ICAaccess$ICPVOF_z_kWphh/as.numeric(at[t]))
+  SCE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_PVOF")]] <- SCE_ICAaccess[[name]]*SCE_ICAaccess$tothh_Cpoly
+  
+  PGE_ICAaccess[[name]] <- ifelse(PGE_ICAaccess$ICPVOF_z_kWphh >= as.numeric(at[t]), 1, 
+                                  PGE_ICAaccess$ICPVOF_z_kWphh/as.numeric(at[t]))
+  PGE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_PVOF")]] <- PGE_ICAaccess[[name]]*PGE_ICAaccess$tothh_Cpoly
+}
+
+for (t in 1:length(at)) { name <- paste0("hhwacc_",at[t],"_gr_PV___pct") # grid limits, pct
+  
+  SCE_ICAaccess[[name]] <- ifelse(SCE_ICAaccess$ICPV_z_kWphh >= as.numeric(at[t]), 1, 
+                                  SCE_ICAaccess$ICPV_z_kWphh/as.numeric(at[t]))
+  SCE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_PV__")]] <- SCE_ICAaccess[[name]]*SCE_ICAaccess$tothh_Cpoly
+  
+  PGE_ICAaccess[[name]] <- ifelse(PGE_ICAaccess$ICPV_z_kWphh >= as.numeric(at[t]), 1, 
+                                  PGE_ICAaccess$ICPV_z_kWphh/as.numeric(at[t]))
+  PGE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_PV__")]] <- PGE_ICAaccess[[name]]*PGE_ICAaccess$tothh_Cpoly
+}
+
+for (t in 1:length(at)) { name <- paste0("hhwacc_",at[t],"_gr_UGOF_pct") # grid limits, pct
+  
+  SCE_ICAaccess[[name]] <- ifelse(SCE_ICAaccess$ICUGOF_z_kWphh >= as.numeric(at[t]), 1, 
+                                  SCE_ICAaccess$ICUGOF_z_kWphh/as.numeric(at[t]))
+  SCE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_UGOF")]] <- SCE_ICAaccess[[name]]*SCE_ICAaccess$tothh_Cpoly
+  
+  PGE_ICAaccess[[name]] <- ifelse(PGE_ICAaccess$ICUGOF_z_kWphh >= as.numeric(at[t]), 1, 
+                                  PGE_ICAaccess$ICUGOF_z_kWphh/as.numeric(at[t]))
+  PGE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_UGOF")]] <- PGE_ICAaccess[[name]]*PGE_ICAaccess$tothh_Cpoly
+}
+
+for (t in 1:length(at)) { name <- paste0("hhwacc_",at[t],"_gr_UG___pct") # grid limits, pct
+  
+  SCE_ICAaccess[[name]] <- ifelse(SCE_ICAaccess$ICUG_z_kWphh >= as.numeric(at[t]), 1, 
+                                  SCE_ICAaccess$ICUG_z_kWphh/as.numeric(at[t]))
+  SCE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_UG__")]] <- SCE_ICAaccess[[name]]*SCE_ICAaccess$tothh_Cpoly
+  
+  PGE_ICAaccess[[name]] <- ifelse(PGE_ICAaccess$ICUG_z_kWphh >= as.numeric(at[t]), 1, 
+                                  PGE_ICAaccess$ICUG_z_kWphh/as.numeric(at[t]))
+  PGE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_UG__")]] <- PGE_ICAaccess[[name]]*PGE_ICAaccess$tothh_Cpoly
+}
+```
+
+...weighted by census tracts, from Project Sunroof
+
+```{r}
+at <- c("1.5", "2.0", "3.0", "4.0", "5.0", "6.0", "7.0", "8.0", "9.0", "10.")
+
+for (t in 1:length(at)) { name <- paste0("hhwacc_",at[t],"_gr_Load_pct") # grid limits, pct
+  
+  SCE_ICAaccess[[name]] <- ifelse(SCE_ICAaccess$ICL_kWphh >= as.numeric(at[t]), 1, 
+                                  SCE_ICAaccess$ICL_max_hhWt_nadj*1000/as.numeric(at[t])/SCE_ICAaccess$tothh_Cpoly)
+  SCE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_Load")]] <- SCE_ICAaccess[[name]]*SCE_ICAaccess$tothh_Cpoly
+  
+  PGE_ICAaccess[[name]] <- ifelse(PGE_ICAaccess$ICL_kWphh >= as.numeric(at[t]), 1, 
+                                  PGE_ICAaccess$ICL_max_hhWt_nadj/as.numeric(at[t])/PGE_ICAaccess$tothh_Cpoly)
+  PGE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_Load")]] <- PGE_ICAaccess[[name]]*PGE_ICAaccess$tothh_Cpoly
+}
+
+for (t in 1:length(at)) { name <- paste0("hhwacc_",at[t],"_gr_PVOF_pct") # grid limits, pct
+  
+  SCE_ICAaccess[[name]] <- ifelse(SCE_ICAaccess$ICPVOF_t_kWphh >= as.numeric(at[t]), 1, 
+                                  SCE_ICAaccess$ICPVOF_t_kWphh/as.numeric(at[t]))
+  SCE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_PVOF")]] <- SCE_ICAaccess[[name]]*SCE_ICAaccess$tothh_Cpoly
+  
+  PGE_ICAaccess[[name]] <- ifelse(PGE_ICAaccess$ICPVOF_t_kWphh >= as.numeric(at[t]), 1, 
+                                  PGE_ICAaccess$ICPVOF_t_kWphh/as.numeric(at[t]))
+  PGE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_PVOF")]] <- PGE_ICAaccess[[name]]*PGE_ICAaccess$tothh_Cpoly
+}
+
+for (t in 1:length(at)) { name <- paste0("hhwacc_",at[t],"_gr_PV___pct") # grid limits, pct
+  
+  SCE_ICAaccess[[name]] <- ifelse(SCE_ICAaccess$ICPV_t_kWphh >= as.numeric(at[t]), 1, 
+                                  SCE_ICAaccess$ICPV_t_kWphh/as.numeric(at[t]))
+  SCE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_PV__")]] <- SCE_ICAaccess[[name]]*SCE_ICAaccess$tothh_Cpoly
+  
+  PGE_ICAaccess[[name]] <- ifelse(PGE_ICAaccess$ICPV_t_kWphh >= as.numeric(at[t]), 1, 
+                                  PGE_ICAaccess$ICPV_t_kWphh/as.numeric(at[t]))
+  PGE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_PV__")]] <- PGE_ICAaccess[[name]]*PGE_ICAaccess$tothh_Cpoly
+}
+
+for (t in 1:length(at)) { name <- paste0("hhwacc_",at[t],"_gr_UGOF_pct") # grid limits, pct
+  
+  SCE_ICAaccess[[name]] <- ifelse(SCE_ICAaccess$ICUGOF_t_kWphh >= as.numeric(at[t]), 1, 
+                                  SCE_ICAaccess$ICUGOF_t_kWphh/as.numeric(at[t]))
+  SCE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_UGOF")]] <- SCE_ICAaccess[[name]]*SCE_ICAaccess$tothh_Cpoly
+  
+  PGE_ICAaccess[[name]] <- ifelse(PGE_ICAaccess$ICUGOF_t_kWphh >= as.numeric(at[t]), 1, 
+                                  PGE_ICAaccess$ICUGOF_t_kWphh/as.numeric(at[t]))
+  PGE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_UGOF")]] <- PGE_ICAaccess[[name]]*PGE_ICAaccess$tothh_Cpoly
+}
+
+for (t in 1:length(at)) { name <- paste0("hhwacc_",at[t],"_gr_UG___pct") # grid limits, pct
+  
+  SCE_ICAaccess[[name]] <- ifelse(SCE_ICAaccess$ICUG_t_kWphh >= as.numeric(at[t]), 1, 
+                                  SCE_ICAaccess$ICUG_t_kWphh/as.numeric(at[t]))
+  SCE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_UG__")]] <- SCE_ICAaccess[[name]]*SCE_ICAaccess$tothh_Cpoly
+  
+  PGE_ICAaccess[[name]] <- ifelse(PGE_ICAaccess$ICUG_t_kWphh >= as.numeric(at[t]), 1, 
+                                  PGE_ICAaccess$ICUG_t_kWphh/as.numeric(at[t]))
+  PGE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_UG__")]] <- PGE_ICAaccess[[name]]*PGE_ICAaccess$tothh_Cpoly
+}
+```
+
+...weighted by census tracts, from DeepSolar
+
+```{r}
+at <- c("1.5", "2.0", "3.0", "4.0", "5.0", "6.0", "7.0", "8.0", "9.0", "10.")
+
+for (t in 1:length(at)) { name <- paste0("hhwacc_",at[t],"_gr_Load_pct") # grid limits, pct
+  
+  SCE_ICAaccess[[name]] <- ifelse(SCE_ICAaccess$ICL_kWphh >= as.numeric(at[t]), 1, 
+                                  SCE_ICAaccess$ICL_max_hhWt_nadj*1000/as.numeric(at[t])/SCE_ICAaccess$tothh_Cpoly)
+  SCE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_Load")]] <- SCE_ICAaccess[[name]]*SCE_ICAaccess$tothh_Cpoly
+  
+  PGE_ICAaccess[[name]] <- ifelse(PGE_ICAaccess$ICL_kWphh >= as.numeric(at[t]), 1, 
+                                  PGE_ICAaccess$ICL_max_hhWt_nadj/as.numeric(at[t])/PGE_ICAaccess$tothh_Cpoly)
+  PGE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_Load")]] <- PGE_ICAaccess[[name]]*PGE_ICAaccess$tothh_Cpoly
+}
+
+for (t in 1:length(at)) { name <- paste0("hhwacc_",at[t],"_gr_PVOF_pct") # grid limits, pct
+  
+  SCE_ICAaccess[[name]] <- ifelse(SCE_ICAaccess$ICPVOF_d_kWphh >= as.numeric(at[t]), 1, 
+                                  SCE_ICAaccess$ICPVOF_d_kWphh/as.numeric(at[t]))
+  SCE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_PVOF")]] <- SCE_ICAaccess[[name]]*SCE_ICAaccess$tothh_Cpoly
+  
+  PGE_ICAaccess[[name]] <- ifelse(PGE_ICAaccess$ICPVOF_d_kWphh >= as.numeric(at[t]), 1, 
+                                  PGE_ICAaccess$ICPVOF_d_kWphh/as.numeric(at[t]))
+  PGE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_PVOF")]] <- PGE_ICAaccess[[name]]*PGE_ICAaccess$tothh_Cpoly
+}
+
+for (t in 1:length(at)) { name <- paste0("hhwacc_",at[t],"_gr_PV___pct") # grid limits, pct
+  
+  SCE_ICAaccess[[name]] <- ifelse(SCE_ICAaccess$ICPV_d_kWphh >= as.numeric(at[t]), 1, 
+                                  SCE_ICAaccess$ICPV_d_kWphh/as.numeric(at[t]))
+  SCE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_PV__")]] <- SCE_ICAaccess[[name]]*SCE_ICAaccess$tothh_Cpoly
+  
+  PGE_ICAaccess[[name]] <- ifelse(PGE_ICAaccess$ICPV_d_kWphh >= as.numeric(at[t]), 1, 
+                                  PGE_ICAaccess$ICPV_d_kWphh/as.numeric(at[t]))
+  PGE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_PV__")]] <- PGE_ICAaccess[[name]]*PGE_ICAaccess$tothh_Cpoly
+}
+
+for (t in 1:length(at)) { name <- paste0("hhwacc_",at[t],"_gr_UGOF_pct") # grid limits, pct
+  
+  SCE_ICAaccess[[name]] <- ifelse(SCE_ICAaccess$ICUGOF_d_kWphh >= as.numeric(at[t]), 1, 
+                                  SCE_ICAaccess$ICUGOF_d_kWphh/as.numeric(at[t]))
+  SCE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_UGOF")]] <- SCE_ICAaccess[[name]]*SCE_ICAaccess$tothh_Cpoly
+  
+  PGE_ICAaccess[[name]] <- ifelse(PGE_ICAaccess$ICUGOF_d_kWphh >= as.numeric(at[t]), 1, 
+                                  PGE_ICAaccess$ICUGOF_d_kWphh/as.numeric(at[t]))
+  PGE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_UGOF")]] <- PGE_ICAaccess[[name]]*PGE_ICAaccess$tothh_Cpoly
+}
+
+for (t in 1:length(at)) { name <- paste0("hhwacc_",at[t],"_gr_UG___pct") # grid limits, pct
+  
+  SCE_ICAaccess[[name]] <- ifelse(SCE_ICAaccess$ICUG_d_kWphh >= as.numeric(at[t]), 1, 
+                                  SCE_ICAaccess$ICUG_d_kWphh/as.numeric(at[t]))
+  SCE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_UG__")]] <- SCE_ICAaccess[[name]]*SCE_ICAaccess$tothh_Cpoly
+  
+  PGE_ICAaccess[[name]] <- ifelse(PGE_ICAaccess$ICUG_d_kWphh >= as.numeric(at[t]), 1, 
+                                  PGE_ICAaccess$ICUG_d_kWphh/as.numeric(at[t]))
+  PGE_ICAaccess[[paste0("hhwacc_",at[t],"_gr_UG__")]] <- PGE_ICAaccess[[name]]*PGE_ICAaccess$tothh_Cpoly
+}
+```
+
+---> END OF CODE THAT CAN BE OMITTED
+
+Conclusion: We will find below that scaling our allocations of existing generation within a circuit by the locations of existing distributed generation (PV) by zip code and census tract does not substantially impact our results. So, we will just use the percentage of households served by a given circuit polygon to scale existing generation.
+
+
+Supplementary Figure S1
+
+```{r}
+IOU_ICAaccess_grid <- 
+  rbind(select(PGE_ICAaccess, IOU, tothh_Cpoly, GEOID10, intersect(starts_with("hhwacc_ge_"), ends_with("_pct"))),
+        select(SCE_ICAaccess, IOU, tothh_Cpoly, GEOID10, intersect(starts_with("hhwacc_ge_"), ends_with("_pct")))) %>%
+  melt( id=c("IOU", "tothh_Cpoly", "GEOID10")) %>%
+  mutate(hhwacc_Cpoly = value*tothh_Cpoly) %>%    # households per Cpoly, not percent
+  group_by(IOU, GEOID10, variable) %>%
+  summarise(avgacc_bg_pct = mean(value, na.rm=TRUE), # avg percent access in bg
+            tothh_bg = sum(tothh_Cpoly, na.rm=TRUE), # total number of households in block group
+            hhwacc_bg_pct = sum(hhwacc_Cpoly, na.rm=TRUE)/sum(tothh_Cpoly, na.rm=TRUE)) %>%
+  mutate(variable = as.character(variable),
+         threshold = sapply(strsplit(variable, "_"), function(x) x[3]),
+         threshold = factor(ifelse(threshold=="0",">0",threshold), levels=c(">0",at)),
+         limit = sapply(strsplit(variable, "_"), function(x) x[2]),
+         DER = factor(sapply(strsplit(variable, "_"), function(x) x[4]), levels=c("ICPV","ICPVOF","ICUG","ICUGOF","ICL")),
+         avgacc_bg_pct = as.numeric(avgacc_bg_pct))
+
+bg <- IOU_ICAaccess_grid %>% filter(!is.na(limit) | !is.na(hhwacc_bg_pct)) %>% ggplot( aes(x=limit, y=hhwacc_bg_pct)) + plotops_bggrid
+bg
+
+#ggsave("figures/access/IOU_accessbg_grid_re.png", width=8.5, height=6)
+#ggsave("figures/access/IOU_accessbg_grid_re.pdf", width=8.5, height=6)
+#ggsave("figures/SCE_accessbg_grid_exz.png", width=8, height=5)
+#ggsave("figures/SCE_accessbg_grid_ext.png", width=8, height=5)
+#ggsave("figures/SCE_accessbg_grid_exd.png", width=8, height=5)
+IOU_accessbg_ge <- ggplot_build(bg)$data[[1]]
+
+IOU_hhwacc_grid <- IOU_ICAaccess_grid %>%
+  mutate(hhwacc_bg = hhwacc_bg_pct*tothh_bg) %>%
+  mutate(DER = recode(DER, 'ICPV'="PV", 'ICPVOF'="PV, with OpFlex", 'ICUG'="Uniform Gen.", 'ICUGOF'="Unif. Gen., w OF", 'ICL'="Load")) %>%
+  group_by(IOU, DER, limit, threshold) %>%
+  summarise(tothh = sum(tothh_bg, na.rm=TRUE),
+            avgacc_pct = mean(avgacc_bg_pct, na.rm=TRUE),
+            hhwacc_pct = sum(hhwacc_bg, na.rm=TRUE)/sum(tothh_bg, na.rm=TRUE)) %>%
+  mutate(threshold = as.numeric(ifelse(as.character(threshold)==">0","0",as.character(threshold))))
+
+all <- IOU_hhwacc_grid %>% ggplot( aes(x=threshold, y=hhwacc_pct, shape=DER)) + plotops_allgrid
+all
+
+#ggsave("figures/access/IOU_accessall_grid_re.png", width=3, height=6)
+#ggsave("figures/access/IOU_accessall_grid_re.pdf", width=3, height=6)
+#ggsave("figures/SCE_accessall_grid_exz.png", width=3, height=5)
+#ggsave("figures/SCE_accessall_grid_ext.png", width=3, height=5)
+#ggsave("figures/SCE_accessall_grid_exd.png", width=3, height=5)
+
+plot_grid(all, bg, labels=c('a','b'), label_size=12, rel_widths=c(0.25,0.75), rel_heights=c(1,1))
+
+#ggsave("figures/access/IOU_access_ge.png", width=11.5, height=6)
+#ggsave("figures/access/IOU_access_ge.pdf", width=11.5, height=6)
+```
+
+Figure 2
+Combined access plots for remaining+existing and remaining only, PV and Load DERs only
+
+```{r}
+plotops_IOUallgrid = list(theme_light(), facet_grid(IOU~., labeller=labeller(IOU=labsIOU)),
+  geom_line(), geom_point(size=2), 
+  theme(legend.position="bottom", legend.margin=margin(), legend.text=element_text(size=8), axis.text.x=element_text(size=7)),
+  guides(shape=guide_legend(nrow=3,title.position="top"), color=guide_legend(nrow=2,title.position="top")),
+  scale_y_continuous(limits=c(0,1), breaks=c(0,0.2,0.4,0.6,0.8,1), labels=scales::percent_format(accuracy=1)),
+  scale_x_continuous(breaks=c(0,as.numeric(at)), labels=c(">0","1.5","2","3","4","5","6","7","8","9","10")),
+  scale_color_manual(values=c(sequential_hcl(5,palette="Viridis")[2],sequential_hcl(5,palette="Viridis")[4])),
+  labs(x="Access threshold (kW)", y="Portion of households with access", shape="DER type", color="Limit type"))
+```
+
+```{r}
+IOU_ICAaccess_grid <- 
+  rbind(select(SCE_ICAaccess, IOU, tothh_Cpoly, GEOID10, intersect(starts_with("hhwacc"), ends_with("_pct"))),
+        select(PGE_ICAaccess, IOU, tothh_Cpoly, GEOID10, intersect(starts_with("hhwacc"), ends_with("_pct")))) %>%
+  melt( id=c("IOU", "tothh_Cpoly", "GEOID10")) %>%
+  mutate(hhwacc_Cpoly = value*tothh_Cpoly) %>%    # households per Cpoly, not percent
+  group_by(IOU, GEOID10, variable) %>%
+  summarise(avgacc_bg_pct = mean(value, na.rm=TRUE), # avg percent access in bg
+            tothh_bg = sum(tothh_Cpoly, na.rm=TRUE), # total number of households in block group
+            hhwacc_bg_pct = sum(hhwacc_Cpoly, na.rm=TRUE)/sum(tothh_Cpoly, na.rm=TRUE)) %>%
+  mutate(variable = as.character(variable),
+         threshold = sapply(strsplit(variable, "_"), function(x) x[3]),
+         threshold = factor(ifelse(threshold=="0",">0",threshold), levels=c(">0",at)),
+         limit = recode(factor(sapply(strsplit(variable, "_"), function(x) x[2]), levels=c("ge","gr")),
+                        'ge'="Remaining + existing", 'gr'="Remaining only"),
+         DER = factor(sapply(strsplit(variable, "_"), function(x) x[4]), levels=c("ICPV","ICPVOF","ICUG","ICUGOF","ICL")),
+         avgacc_bg_pct = as.numeric(avgacc_bg_pct))
+
+bg <- IOU_ICAaccess_grid %>% filter(DER!="ICUG" & DER!="ICUGOF" & !(DER=="ICL" & limit=="Remaining + existing")) %>% 
+  filter(!is.na(limit) | !is.na(hhwacc_bg_pct)) %>% 
+  ggplot( aes(x=limit, y=hhwacc_bg_pct)) + plotops_bggrid
+bg
+
+ggsave("figures/access/IOU_accessbg_grid.png", width=8.5, height=6)
+ggsave("figures/access/IOU_accessbg_grid.pdf", width=8.5, height=6)
+IOU_accessbg_grid <- ggplot_build(bg)$data[[1]]
+
+IOU_hhwacc_grid <- IOU_ICAaccess_grid %>%
+  mutate(hhwacc_bg = hhwacc_bg_pct*tothh_bg) %>%
+  mutate(DER = recode(DER, 'ICPV'="PV", 'ICPVOF'="PV, with OpFlex", 'ICUG'="Uniform Gen.", 'ICUGOF'="Unif. Gen., w OF", 'ICL'="Load")) %>%
+  group_by(IOU, DER, limit, threshold) %>%
+  summarise(tothh = sum(tothh_bg, na.rm=TRUE),
+            avgacc_pct = mean(avgacc_bg_pct, na.rm=TRUE),
+            hhwacc_pct = sum(hhwacc_bg, na.rm=TRUE)/sum(tothh_bg, na.rm=TRUE)) %>%
+  mutate(threshold = as.numeric(ifelse(as.character(threshold)==">0","0",as.character(threshold))))
+
+all <- IOU_hhwacc_grid %>% 
+  filter(DER!="Uniform Gen." & DER!="Unif. Gen., w OF" & !(DER=="Load" & limit=="Remaining + existing")) %>%
+  ggplot( aes(x=threshold, y=hhwacc_pct, shape=DER, color=limit)) + plotops_IOUallgrid
+all
+
+ggsave("figures/access/IOU_accessall_grid.png", width=3, height=6)
+ggsave("figures/access/IOU_accessall_grid.pdf", width=3, height=6)
+
+plot_grid(all, bg, labels=c('a','b'), label_size=12, rel_widths=c(0.25,0.75), rel_heights=c(1,1))
+
+ggsave("figures/access/IOU_access_grid.png", width=11.5, height=6)
+ggsave("figures/access/IOU_access_grid.pdf", width=11.5, height=6)
+```
+
+--------------------------------------------------------------------------------------------
+
+ZIP CODE INFO
+
+--------------------------------------------------------------------------------------------
+
+```{r}
+area_azi_tilt = read.csv("../solarpotential/area_azi_tilt.csv", header=TRUE)
+area_azi_tilt_lower = read.csv("../solarpotential/area_azi_tilt_lower.csv", header=TRUE)
+area_azi_tilt_upper = read.csv("../solarpotential/area_azi_tilt_upper.csv", header=TRUE)
+```
+
+Multiple zip codes may be matched for each census block group. To join rooftop suitability percentages by zip code data, we will take the mean of suitability estimates for the matched zip codes for each census block group.
+
+```{r}
+SCE_zip <- SCE_ICAaccess[,c("CircuitName","GEOID10","ZCTA","zip_ct")] %>%
+  mutate(nzip = nchar(ZCTA)/5) %>%
+  mutate(zip = ifelse(nzip>=1,ZCTA,zip_ct)) %>%
+  mutate(nzip = nchar(zip)/5) %>%
+  mutate(zip1 = substr(zip,1,5), zip2 = ifelse(nzip>1, substr(zip,6,10), NA), 
+         zip3 = ifelse(nzip>2, substr(zip,11,15), NA), zip4 = ifelse(nzip>3, substr(zip,16,20), NA), 
+         zip5 = ifelse(nzip>4, substr(zip,21,25), NA), zip6 = ifelse(nzip>5, substr(zip,26,30), NA),
+         zip7 = ifelse(nzip>6, substr(zip,31,35), NA)) %>%
+  merge(area_azi_tilt_lower[,c("zip","locale","pct.suitable")], by.x="zip1", by.y="zip", all.x=TRUE) %>%
+  dplyr::rename("hhwacc_1.5_rl_PV_pct1"="pct.suitable") %>%
+  mutate(hhwacc_1.5_rl_PV_pct2 = NA, hhwacc_1.5_rl_PV_pct3 = NA, hhwacc_1.5_rl_PV_pct4 = NA, 
+         hhwacc_1.5_rl_PV_pct5 = NA, hhwacc_1.5_rl_PV_pct6 = NA, hhwacc_1.5_rl_PV_pct7 = NA) %>%
+  merge(area_azi_tilt[,c("zip","pct.suitable")], by.x="zip1", by.y="zip", all.x=TRUE) %>%
+  dplyr::rename("hhwacc_1.5_rm_PV_pct1"="pct.suitable") %>%
+  mutate(hhwacc_1.5_rm_PV_pct2 = NA, hhwacc_1.5_rm_PV_pct3 = NA, hhwacc_1.5_rm_PV_pct4 = NA, 
+         hhwacc_1.5_rm_PV_pct5 = NA, hhwacc_1.5_rm_PV_pct6 = NA, hhwacc_1.5_rm_PV_pct7 = NA) %>%
+  merge(area_azi_tilt_upper[,c("zip","pct.suitable")], by.x="zip1", by.y="zip", all.x=TRUE) %>%
+  dplyr::rename("hhwacc_1.5_rh_PV_pct1"="pct.suitable") %>%
+  mutate(hhwacc_1.5_rh_PV_pct2 = NA, hhwacc_1.5_rh_PV_pct3 = NA, hhwacc_1.5_rh_PV_pct4 = NA, 
+         hhwacc_1.5_rh_PV_pct5 = NA, hhwacc_1.5_rh_PV_pct6 = NA, hhwacc_1.5_rh_PV_pct7 = NA)
+
+for (cpoly in 1:nrow(SCE_zip)){
+if(!is.na(SCE_zip$nzip[cpoly])){
+  if(SCE_zip$nzip[cpoly]>1 & SCE_zip$zip2[cpoly]>90000){ 
+    z = area_azi_tilt_lower[which(area_azi_tilt_lower$zip==SCE_zip$zip2[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ SCE_zip$hhwacc_1.5_rl_PV_pct2[cpoly] = z }
+    z = area_azi_tilt[which(area_azi_tilt$zip==SCE_zip$zip2[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ SCE_zip$hhwacc_1.5_rm_PV_pct2[cpoly] = z }
+    z = area_azi_tilt_upper[which(area_azi_tilt_upper$zip==SCE_zip$zip2[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ SCE_zip$hhwacc_1.5_rh_PV_pct2[cpoly] = z }
+  }
+  if(SCE_zip$nzip[cpoly]>2 & SCE_zip$zip3[cpoly]>90000){ 
+    z = area_azi_tilt_lower[which(area_azi_tilt_lower$zip==SCE_zip$zip3[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ SCE_zip$hhwacc_1.5_rl_PV_pct3[cpoly] = z }
+    z = area_azi_tilt[which(area_azi_tilt$zip==SCE_zip$zip3[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ SCE_zip$hhwacc_1.5_rm_PV_pct3[cpoly] = z }
+    z = area_azi_tilt_upper[which(area_azi_tilt_upper$zip==SCE_zip$zip3[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ SCE_zip$hhwacc_1.5_rh_PV_pct3[cpoly] = z }
+  }
+  if(SCE_zip$nzip[cpoly]>3 & SCE_zip$zip4[cpoly]>90000){ 
+    z = area_azi_tilt_lower[which(area_azi_tilt_lower$zip==SCE_zip$zip4[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ SCE_zip$hhwacc_1.5_rl_PV_pct4[cpoly] = z }
+    z = area_azi_tilt[which(area_azi_tilt$zip==SCE_zip$zip4[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ SCE_zip$hhwacc_1.5_rm_PV_pct4[cpoly] = z }
+    z = area_azi_tilt_upper[which(area_azi_tilt_upper$zip==SCE_zip$zip4[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ SCE_zip$hhwacc_1.5_rh_PV_pct4[cpoly] = z }
+  }
+  if(SCE_zip$nzip[cpoly]>4 & SCE_zip$zip5[cpoly]>90000){ 
+    z = area_azi_tilt_lower[which(area_azi_tilt_lower$zip==SCE_zip$zip5[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ SCE_zip$hhwacc_1.5_rl_PV_pct5[cpoly] = z }
+    z = area_azi_tilt[which(area_azi_tilt$zip==SCE_zip$zip5[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ SCE_zip$hhwacc_1.5_rm_PV_pct5[cpoly] = z }
+    z = area_azi_tilt_upper[which(area_azi_tilt_upper$zip==SCE_zip$zip5[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ SCE_zip$hhwacc_1.5_rh_PV_pct5[cpoly] = z }
+  }
+  if(SCE_zip$nzip[cpoly]>5 & SCE_zip$zip6[cpoly]>90000){ 
+    z = area_azi_tilt_lower[which(area_azi_tilt_lower$zip==SCE_zip$zip6[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ SCE_zip$hhwacc_1.5_rl_PV_pct6[cpoly] = z }
+    z = area_azi_tilt[which(area_azi_tilt$zip==SCE_zip$zip6[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ SCE_zip$hhwacc_1.5_rm_PV_pct6[cpoly] = z }
+    z = area_azi_tilt_upper[which(area_azi_tilt_upper$zip==SCE_zip$zip6[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ SCE_zip$hhwacc_1.5_rh_PV_pct6[cpoly] = z }
+  }
+  if(SCE_zip$nzip[cpoly]>6 & SCE_zip$zip7[cpoly]>90000){ 
+    z = area_azi_tilt_lower[which(area_azi_tilt_lower$zip==SCE_zip$zip7[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ SCE_zip$hhwacc_1.5_rl_PV_pct7[cpoly] = z }
+    z = area_azi_tilt[which(area_azi_tilt$zip==SCE_zip$zip7[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ SCE_zip$hhwacc_1.5_rm_PV_pct7[cpoly] = z }
+    z = area_azi_tilt_upper[which(area_azi_tilt_upper$zip==SCE_zip$zip7[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ SCE_zip$hhwacc_1.5_rh_PV_pct7[cpoly] = z }
+  }
+}}
+
+SCE_zip <- SCE_zip %>% 
+  mutate(hhwacc_1.5_rl_PV_pct = 
+           rowMeans(select(., c("hhwacc_1.5_rl_PV_pct1", "hhwacc_1.5_rl_PV_pct2", "hhwacc_1.5_rl_PV_pct3", 
+                                "hhwacc_1.5_rl_PV_pct4", "hhwacc_1.5_rl_PV_pct5", "hhwacc_1.5_rl_PV_pct6",
+                                "hhwacc_1.5_rl_PV_pct7")), na.rm=TRUE),
+         hhwacc_1.5_rm_PV_pct = 
+           rowMeans(select(., c("hhwacc_1.5_rm_PV_pct1", "hhwacc_1.5_rm_PV_pct2", "hhwacc_1.5_rm_PV_pct3", 
+                                "hhwacc_1.5_rm_PV_pct4", "hhwacc_1.5_rm_PV_pct5", "hhwacc_1.5_rm_PV_pct6", 
+                                "hhwacc_1.5_rm_PV_pct7")), na.rm=TRUE),
+         hhwacc_1.5_rh_PV_pct = 
+           rowMeans(select(., c("hhwacc_1.5_rh_PV_pct1", "hhwacc_1.5_rh_PV_pct2", "hhwacc_1.5_rh_PV_pct3", 
+                                "hhwacc_1.5_rh_PV_pct4", "hhwacc_1.5_rh_PV_pct5", "hhwacc_1.5_rh_PV_pct6", 
+                                "hhwacc_1.5_rh_PV_pct7")), na.rm=TRUE))
+  
+summary(as.factor(SCE_zip$nzip))
+```
+
+```{r}
+PGE_zip <- PGE_ICAaccess[,c("CircuitName","GEOID10","ZCTA","zip_ct")] %>%
+  mutate(nzip = nchar(ZCTA)/5) %>%
+  mutate(zip = ifelse(nzip>=1,ZCTA,zip_ct)) %>%
+  mutate(nzip = nchar(zip)/5) %>%
+  mutate(zip1 = substr(zip,1,5), zip2 = ifelse(nzip>1, substr(zip,6,10), NA), 
+         zip3 = ifelse(nzip>2, substr(zip,11,15), NA), zip4 = ifelse(nzip>3, substr(zip,16,20), NA), 
+         zip5 = ifelse(nzip>4, substr(zip,21,25), NA), zip6 = ifelse(nzip>5, substr(zip,26,30), NA),
+         zip7 = ifelse(nzip>6, substr(zip,31,35), NA)) %>%
+  merge(area_azi_tilt_lower[,c("zip","locale","pct.suitable")], by.x="zip1", by.y="zip", all.x=TRUE) %>%
+  dplyr::rename("hhwacc_1.5_rl_PV_pct1"="pct.suitable") %>%
+  mutate(hhwacc_1.5_rl_PV_pct2 = NA, hhwacc_1.5_rl_PV_pct3 = NA, hhwacc_1.5_rl_PV_pct4 = NA, 
+         hhwacc_1.5_rl_PV_pct5 = NA, hhwacc_1.5_rl_PV_pct6 = NA, hhwacc_1.5_rl_PV_pct7 = NA) %>%
+  merge(area_azi_tilt[,c("zip","pct.suitable")], by.x="zip1", by.y="zip", all.x=TRUE) %>%
+  dplyr::rename("hhwacc_1.5_rm_PV_pct1"="pct.suitable") %>%
+  mutate(hhwacc_1.5_rm_PV_pct2 = NA, hhwacc_1.5_rm_PV_pct3 = NA, hhwacc_1.5_rm_PV_pct4 = NA, 
+         hhwacc_1.5_rm_PV_pct5 = NA, hhwacc_1.5_rm_PV_pct6 = NA, hhwacc_1.5_rm_PV_pct7 = NA) %>%
+  merge(area_azi_tilt_upper[,c("zip","pct.suitable")], by.x="zip1", by.y="zip", all.x=TRUE) %>%
+  dplyr::rename("hhwacc_1.5_rh_PV_pct1"="pct.suitable") %>%
+  mutate(hhwacc_1.5_rh_PV_pct2 = NA, hhwacc_1.5_rh_PV_pct3 = NA, hhwacc_1.5_rh_PV_pct4 = NA, 
+         hhwacc_1.5_rh_PV_pct5 = NA, hhwacc_1.5_rh_PV_pct6 = NA, hhwacc_1.5_rh_PV_pct7 = NA)
+
+for (cpoly in 1:nrow(PGE_zip)){
+if(!is.na(PGE_zip$nzip[cpoly])){
+  if(PGE_zip$nzip[cpoly]>1 & PGE_zip$zip2[cpoly]>90000){ 
+    z = area_azi_tilt_lower[which(area_azi_tilt_lower$zip==PGE_zip$zip2[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ PGE_zip$hhwacc_1.5_rl_PV_pct2[cpoly] = z }
+    z = area_azi_tilt[which(area_azi_tilt$zip==PGE_zip$zip2[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ PGE_zip$hhwacc_1.5_rm_PV_pct2[cpoly] = z }
+    z = area_azi_tilt_upper[which(area_azi_tilt_upper$zip==PGE_zip$zip2[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ PGE_zip$hhwacc_1.5_rh_PV_pct2[cpoly] = z }
+  }
+  if(PGE_zip$nzip[cpoly]>2 & PGE_zip$zip3[cpoly]>90000){ 
+    z = area_azi_tilt_lower[which(area_azi_tilt_lower$zip==PGE_zip$zip3[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ PGE_zip$hhwacc_1.5_rl_PV_pct3[cpoly] = z }
+    z = area_azi_tilt[which(area_azi_tilt$zip==PGE_zip$zip3[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ PGE_zip$hhwacc_1.5_rm_PV_pct3[cpoly] = z }
+    z = area_azi_tilt_upper[which(area_azi_tilt_upper$zip==PGE_zip$zip3[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ PGE_zip$hhwacc_1.5_rh_PV_pct3[cpoly] = z }
+  }
+  if(PGE_zip$nzip[cpoly]>3 & PGE_zip$zip4[cpoly]>90000){ 
+    z = area_azi_tilt_lower[which(area_azi_tilt_lower$zip==PGE_zip$zip4[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ PGE_zip$hhwacc_1.5_rl_PV_pct4[cpoly] = z }
+    z = area_azi_tilt[which(area_azi_tilt$zip==PGE_zip$zip4[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ PGE_zip$hhwacc_1.5_rm_PV_pct4[cpoly] = z }
+    z = area_azi_tilt_upper[which(area_azi_tilt_upper$zip==PGE_zip$zip4[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ PGE_zip$hhwacc_1.5_rh_PV_pct4[cpoly] = z }
+  }
+  if(PGE_zip$nzip[cpoly]>4 & PGE_zip$zip5[cpoly]>90000){ 
+    z = area_azi_tilt_lower[which(area_azi_tilt_lower$zip==PGE_zip$zip5[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ PGE_zip$hhwacc_1.5_rl_PV_pct5[cpoly] = z }
+    z = area_azi_tilt[which(area_azi_tilt$zip==PGE_zip$zip5[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ PGE_zip$hhwacc_1.5_rm_PV_pct5[cpoly] = z }
+    z = area_azi_tilt_upper[which(area_azi_tilt_upper$zip==PGE_zip$zip5[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ PGE_zip$hhwacc_1.5_rh_PV_pct5[cpoly] = z }
+  }
+  if(PGE_zip$nzip[cpoly]>5 & PGE_zip$zip6[cpoly]>90000){ 
+    z = area_azi_tilt_lower[which(area_azi_tilt_lower$zip==PGE_zip$zip6[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ PGE_zip$hhwacc_1.5_rl_PV_pct6[cpoly] = z }
+    z = area_azi_tilt[which(area_azi_tilt$zip==PGE_zip$zip6[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ PGE_zip$hhwacc_1.5_rm_PV_pct6[cpoly] = z }
+    z = area_azi_tilt_upper[which(area_azi_tilt_upper$zip==PGE_zip$zip6[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ PGE_zip$hhwacc_1.5_rh_PV_pct6[cpoly] = z }
+  }
+  if(PGE_zip$nzip[cpoly]>6 & PGE_zip$zip7[cpoly]>90000){ 
+    z = area_azi_tilt_lower[which(area_azi_tilt_lower$zip==PGE_zip$zip7[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ PGE_zip$hhwacc_1.5_rl_PV_pct7[cpoly] = z }
+    z = area_azi_tilt[which(area_azi_tilt$zip==PGE_zip$zip7[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ PGE_zip$hhwacc_1.5_rm_PV_pct7[cpoly] = z }
+    z = area_azi_tilt_upper[which(area_azi_tilt_upper$zip==PGE_zip$zip7[cpoly]), c("pct.suitable")]
+    if(!is.null(z) & length(z)>0){ PGE_zip$hhwacc_1.5_rh_PV_pct7[cpoly] = z }
+  }
+}}
+
+PGE_zip <- PGE_zip %>%
+  mutate(hhwacc_1.5_rl_PV_pct = 
+           rowMeans(select(., c("hhwacc_1.5_rl_PV_pct1", "hhwacc_1.5_rl_PV_pct2", "hhwacc_1.5_rl_PV_pct3", 
+                                "hhwacc_1.5_rl_PV_pct4", "hhwacc_1.5_rl_PV_pct5", "hhwacc_1.5_rl_PV_pct6", 
+                                "hhwacc_1.5_rl_PV_pct7")), na.rm=TRUE),
+         hhwacc_1.5_rm_PV_pct = 
+           rowMeans(select(., c("hhwacc_1.5_rm_PV_pct1", "hhwacc_1.5_rm_PV_pct2", "hhwacc_1.5_rm_PV_pct3", 
+                                "hhwacc_1.5_rm_PV_pct4", "hhwacc_1.5_rm_PV_pct5", "hhwacc_1.5_rm_PV_pct6", 
+                                "hhwacc_1.5_rm_PV_pct7")), na.rm=TRUE),
+         hhwacc_1.5_rh_PV_pct = 
+           rowMeans(select(., c("hhwacc_1.5_rh_PV_pct1", "hhwacc_1.5_rh_PV_pct2", "hhwacc_1.5_rh_PV_pct3", 
+                                "hhwacc_1.5_rh_PV_pct4", "hhwacc_1.5_rh_PV_pct5", "hhwacc_1.5_rh_PV_pct6", 
+                                "hhwacc_1.5_rh_PV_pct7")), na.rm=TRUE))
+  
+summary(as.factor(PGE_zip$nzip))
+```
+
+```{r}
+rm(area_azi_tilt, area_azi_tilt_lower, area_azi_tilt_upper)
+```
+
+```{r}
+zipcols <- c("CircuitName","GEOID10","ZCTA","zip_ct","nzip","zip","locale","zip1","zip2","zip3","zip4","zip5","zip6","zip7",
+             "hhwacc_1.5_rl_PV_pct1","hhwacc_1.5_rl_PV_pct2","hhwacc_1.5_rl_PV_pct3","hhwacc_1.5_rl_PV_pct4","hhwacc_1.5_rl_PV_pct5",
+             "hhwacc_1.5_rl_PV_pct6","hhwacc_1.5_rl_PV_pct7","hhwacc_1.5_rm_PV_pct1","hhwacc_1.5_rm_PV_pct2","hhwacc_1.5_rm_PV_pct3",
+             "hhwacc_1.5_rm_PV_pct4","hhwacc_1.5_rm_PV_pct5","hhwacc_1.5_rm_PV_pct6","hhwacc_1.5_rm_PV_pct7","hhwacc_1.5_rh_PV_pct1",
+             "hhwacc_1.5_rh_PV_pct2","hhwacc_1.5_rh_PV_pct3","hhwacc_1.5_rh_PV_pct4","hhwacc_1.5_rh_PV_pct5","hhwacc_1.5_rh_PV_pct6",
+             "hhwacc_1.5_rh_PV_pct7","hhwacc_1.5_rl_PV_pct","hhwacc_1.5_rm_PV_pct","hhwacc_1.5_rh_PV_pct")
+
+PGE_zip <- PGE_zip[,zipcols]; SCE_zip <- SCE_zip[,zipcols]
+ziptypes <- sapply(PGE_zip,class)
+write.csv(ziptypes, file="circuitfiles/IOU_zipclasses.csv", row.names=FALSE)
+write.csv(PGE_zip, file = "circuitfiles/PGE_zip.csv", row.names=FALSE)
+write.csv(SCE_zip, file = "circuitfiles/SCE_zip.csv", row.names=FALSE)
+rm(zipcols,ziptypes)
+```
+
+Merging back into main files
+
+```{r}
+ziptypes <- read.csv("circuitfiles/IOU_zipclasses.csv", header=T, na.strings="?")
+PGE_zip <- read.csv("circuitfiles/PGE_zip.csv", header=T, na.strings="?", colClasses=as.character(ziptypes$x))
+SCE_zip <- read.csv("circuitfiles/SCE_zip.csv", header=T, na.strings="?", colClasses=as.character(ziptypes$x))
+rm(ziptypes)
+
+SCE_ICAaccess <- SCE_ICAaccess %>%
+  merge(SCE_zip[,c("CircuitName","GEOID10","hhwacc_1.5_rl_PV_pct","hhwacc_1.5_rm_PV_pct","hhwacc_1.5_rh_PV_pct")], 
+        by=c("CircuitName","GEOID10"), all.x=TRUE) %>%
+  dplyr::rename("hhwacc_rl_1.5_PV_pct"="hhwacc_1.5_rl_PV_pct", "hhwacc_rm_1.5_PV_pct"="hhwacc_1.5_rm_PV_pct", 
+                "hhwacc_rh_1.5_PV_pct"="hhwacc_1.5_rh_PV_pct")
+  
+PGE_ICAaccess <- PGE_ICAaccess %>%
+  merge(PGE_zip[,c("CircuitName","GEOID10","hhwacc_1.5_rl_PV_pct","hhwacc_1.5_rm_PV_pct","hhwacc_1.5_rh_PV_pct")], 
+        by=c("CircuitName","GEOID10"), all.x=TRUE) %>%
+  dplyr::rename("hhwacc_rl_1.5_PV_pct"="hhwacc_1.5_rl_PV_pct", "hhwacc_rm_1.5_PV_pct"="hhwacc_1.5_rm_PV_pct", 
+                "hhwacc_rh_1.5_PV_pct"="hhwacc_1.5_rh_PV_pct")
+```
+
+
+--------------------------------------------------------------------------------------------
+
+SOLAR SUITABILITY LIMITS
+
+--------------------------------------------------------------------------------------------
+
+Calculating best- and worst-case access to PV at different thresholds, considering building suitability limits
+
+```{r}
+for (j in c("ICPVOF","ICPV")){
+  for (limit in c("m","l")){ # rooftop limit scenario
+    for (t in 1:length(at)) { name <- paste0("hhwacc_ge_",at[t],"_",j,"_pct")
+  
+  w <- paste0("hhwacc_w",limit,"_",at[t],"_",j,"_pct") # worst-case combined scenario
+  SCE_ICAaccess[[w]] <- ifelse(((1-SCE_ICAaccess[[name]])+(1-SCE_ICAaccess[[paste0("hhwacc_r",limit,"_1.5_PV_pct")]]))>=1, 0, 
+                               1-((1-SCE_ICAaccess[[name]])+(1-SCE_ICAaccess[[paste0("hhwacc_r",limit,"_1.5_PV_pct")]])))
+  #SCE_ICAaccess[[w]] <- SCE_ICAaccess[[name]] * SCE_ICAaccess[[paste0("hhwacc_1.5_r",limit,"_PV_pct")]]
+  SCE_ICAaccess[[paste0("hhwacc_w",limit,"_",at[t],"_",j)]] <- SCE_ICAaccess[[w]]*SCE_ICAaccess$tothh_Cpoly
+  PGE_ICAaccess[[w]] <- ifelse(((1-PGE_ICAaccess[[name]])+(1-PGE_ICAaccess[[paste0("hhwacc_r",limit,"_1.5_PV_pct")]]))>=1, 0, 
+                               1-((1-PGE_ICAaccess[[name]])+(1-PGE_ICAaccess[[paste0("hhwacc_r",limit,"_1.5_PV_pct")]])))
+  #PGE_ICAaccess[[w]] <- PGE_ICAaccess[[name]] * PGE_ICAaccess[[paste0("hhwacc_1.5_r",limit,"_PV_pct")]]
+  PGE_ICAaccess[[paste0("hhwacc_w",limit,"_",at[t],"_",j)]] <- PGE_ICAaccess[[w]]*PGE_ICAaccess$tothh_Cpoly
+  
+  b <- paste0("hhwacc_b",limit,"_",at[t],"_",j,"_pct") # best-case combined scenario
+  SCE_ICAaccess[[b]] <- ifelse(SCE_ICAaccess[[name]] < SCE_ICAaccess[[paste0("hhwacc_r",limit,"_1.5_PV_pct")]], 
+                                SCE_ICAaccess[[name]], SCE_ICAaccess[[paste0("hhwacc_r",limit,"_1.5_PV_pct")]])
+  SCE_ICAaccess[[paste0("hhwacc_b",limit,"_",at[t],"_",j)]] <- SCE_ICAaccess[[b]]*SCE_ICAaccess$tothh_Cpoly
+  PGE_ICAaccess[[b]] <- ifelse(PGE_ICAaccess[[name]] < PGE_ICAaccess[[paste0("hhwacc_r",limit,"_1.5_PV_pct")]], 
+                                PGE_ICAaccess[[name]], PGE_ICAaccess[[paste0("hhwacc_r",limit,"_1.5_PV_pct")]])
+  PGE_ICAaccess[[paste0("hhwacc_b",limit,"_",at[t],"_",j)]] <- PGE_ICAaccess[[b]]*PGE_ICAaccess$tothh_Cpoly
+}}}
+
+rm(name,t,limit,w,b)
+```
+
+Rooftop and grid limits for PV and PVOF DERs
+
+```{r}
+IOU_ICAaccess_rs <- rbind(select(SCE_ICAaccess, IOU, tothh_Cpoly, GEOID10, intersect(starts_with("hhwacc_"), ends_with("PV_pct")), 
+                                 intersect(starts_with("hhwacc_"), ends_with("ICPVOF_pct"))), 
+                          select(PGE_ICAaccess, IOU, tothh_Cpoly, GEOID10, intersect(starts_with("hhwacc_"), ends_with("PV_pct")), 
+                                 intersect(starts_with("hhwacc_"), ends_with("ICPVOF_pct")))) %>%
+  melt( id=c("IOU", "tothh_Cpoly", "GEOID10")) %>%
+  mutate(hhwacc_Cpoly = value*tothh_Cpoly) %>%      # households per Cpoly, not percent
+  group_by(IOU, GEOID10, variable) %>%
+  summarise(avgacc_bg_pct = mean(value, na.rm=TRUE), # avg percent access in bg
+            tothh_bg = sum(tothh_Cpoly, na.rm=TRUE), # total number of households in block group
+            hhwacc_bg_pct = sum(hhwacc_Cpoly, na.rm=TRUE)/sum(tothh_Cpoly, na.rm=TRUE)) %>%  
+  mutate(variable = as.character(variable),
+         threshold = sapply(strsplit(variable, "_"), function(x) x[3])) %>%
+  filter(threshold!="0") %>%
+  mutate(threshold = factor(threshold, levels=at),
+         limit = recode(factor(substr(sapply(strsplit(variable, "_"), function(x) x[2]),1,1), levels=c("r","g","b","w")),
+                        'r'="Rooftop",'g'="Grid",'b'="Best-case",'w'="Worst-case"),
+         scenario = recode(factor(substr(sapply(strsplit(variable, "_"), function(x) x[2]),2,2), levels=c("l","m","h","r","e")), 
+                           'l'="(lower)", 'm'="(mean)", 'h'="(upper)", 'e'="-"),
+         DER = factor(sapply(strsplit(variable, "_"), function(x) x[4]), levels=c("PV","ICPV","ICPVOF")),
+         avgacc_bg_pct = as.numeric(avgacc_bg_pct)) %>% filter(scenario!="r")
+
+IOU_hhwacc_rs <- IOU_ICAaccess_rs %>%
+  mutate(hhwacc_bg = hhwacc_bg_pct*tothh_bg) %>%
+  mutate(DER = recode(DER, 'PV'="Rooftop PV", 'ICPVOF'="PV, with OpFlex", 'ICPV'="PV")) %>%
+  group_by(IOU, DER, limit, scenario, threshold) %>%
+  summarise(tothh = sum(tothh_bg, na.rm=TRUE),
+            avgacc_pct = mean(avgacc_bg_pct, na.rm=TRUE),
+            hhwacc_pct = sum(hhwacc_bg, na.rm=TRUE)/sum(tothh_bg, na.rm=TRUE)) %>%
+  mutate(threshold = as.numeric(as.character(threshold)))
+```
+
+```{r}
+plotops_bgPV = list(theme_light(),
+  facet_grid(IOU~DER, scales="free_x", space='free_x', labeller=labeller(IOU=labsIOU, DER=labsDER)),
+  geom_boxplot(aes(fill=threshold), alpha=1, width=0.9), scale_fill_discrete_sequential(palette="Mint", nmax=11, order=2:11),
+  theme(legend.position="bottom"), guides(fill=guide_legend(nrow=1)), 
+  scale_y_continuous(limits=c(0,1), breaks=c(0,0.2,0.4,0.6,0.8,1), labels=scales::percent_format(accuracy=1)),
+  labs(x="Limit type", y="Portion of households with access, by block group", fill="Access threshold (kW)"))
+
+plotops_allPV = list(theme_light(), facet_grid(IOU~., labeller=labeller(IOU=labsIOU)), geom_line(), geom_point(size=2), 
+  theme(legend.position="bottom", legend.margin=margin(), legend.text=element_text(size=8), axis.text.x=element_text(size=7)),
+  guides(shape=guide_legend(nrow=3,title.position="top"), color=guide_legend(nrow=4,title.position="top")),
+  scale_y_continuous(limits=c(0,1), breaks=c(0,0.2,0.4,0.6,0.8,1), labels=scales::percent_format(accuracy=1)),
+  scale_x_continuous(breaks=as.numeric(at), labels=c("1.5","2","3","4","5","6","7","8","9","10")), 
+  scale_color_discrete_sequential(palette="Viridis", nmax=5, order=5:2),
+  labs(x="Access threshold (kW)", y="Portion of households with access", shape="DER type", color="Limit type"))
+```
+
+Figure 3
+
+```{r}
+bg <- IOU_ICAaccess_rs %>% filter(scenario=="(mean)" | scenario=="-") %>% filter(!is.na(limit) | !is.na(hhwacc_bg_pct)) %>%
+  ggplot( aes(x=limit, y=hhwacc_bg_pct)) + plotops_bgPV
+bg
+
+#ggsave("figures/IOU_accessbg_rm.png", width=8.5, height=6)
+#IOU_accessbg_rm <- ggplot_build(p)$data[[1]]
+ggsave("figures/access/IOU_accessbg_rm_re.png", width=8.5, height=6)
+ggsave("figures/access/IOU_accessbg_rm_re.pdf", width=8.5, height=6)
+IOU_accessbg_rm_re <- ggplot_build(bg)$data[[1]]
+
+all <- IOU_hhwacc_rs %>% filter(scenario=="(mean)" | scenario=="-") %>%
+  ggplot( aes(x=threshold, y=hhwacc_pct, shape=DER, color=limit)) + plotops_allPV
+all
+
+#ggsave("figures/IOU_accessall_rm.png", width=3, height=6)
+ggsave("figures/access/IOU_accessall_rm_re.png", width=3, height=6)
+ggsave("figures/access/IOU_accessall_rm_re.pdf", width=3, height=6)
+
+plot_grid(all, bg, labels=c('a','b'), label_size=12, rel_widths=c(0.25,0.75), rel_heights=c(1,1))
+
+ggsave("figures/access/IOU_access_rm.png", width=11.5, height=6)
+ggsave("figures/access/IOU_access_rm.pdf", width=11.5, height=6)
+```
+
+
+```{r}
+write.csv(SCE_ICAaccess, file = "circuitfiles/SCE_ICAaccess.csv", row.names=FALSE)
+write.csv(SCE_ICAaccess_grid, file = "circuitfiles/SCE_ICAaccess_bg_grid.csv", row.names=FALSE)
+write.csv(SCE_hhwacc_grid, file = "circuitfiles/SCE_ICAaccess_all_grid.csv", row.names=FALSE)
+write.csv(SCE_ICAaccess_rs, file = "circuitfiles/SCE_ICAaccess_bg_rs.csv", row.names=FALSE)
+write.csv(SCE_hhwacc_rs, file = "circuitfiles/SCE_ICAaccess_all_rs.csv", row.names=FALSE)
+
+write.csv(apply(SCE_accessbg_grid,2,as.character), file = "circuitfiles/SCE_accessbg_grid.csv", row.names=FALSE)
+write.csv(apply(SCE_accessbg_rm_re,2,as.character), file = "circuitfiles/SCE_accessbg_rm_re.csv", row.names=FALSE)
+```
+
+```{r}
+write.csv(PGE_ICAaccess, file = "circuitfiles/PGE_ICAaccess.csv", row.names=FALSE)
+write.csv(PGE_ICAaccess_grid, file = "circuitfiles/PGE_ICAaccess_bg_grid.csv", row.names=FALSE)
+write.csv(PGE_hhwacc_grid, file = "circuitfiles/PGE_ICAaccess_all_grid.csv", row.names=FALSE)
+write.csv(PGE_ICAaccess_rs, file = "circuitfiles/PGE_ICAaccess_bg_rs.csv", row.names=FALSE)
+write.csv(PGE_hhwacc_rs, file = "circuitfiles/PGE_ICAaccess_all_rs.csv", row.names=FALSE)
+
+write.csv(apply(PGE_accessbg_grid,2,as.character), file = "circuitfiles/PGE_accessbg_grid.csv", row.names=FALSE)
+write.csv(apply(PGE_accessbg_rm_re,2,as.character), file = "circuitfiles/PGE_accessbg_rm_re.csv", row.names=FALSE)
+```
+
+```{r}
+rm(plotops_allgrid, plotops_allPV, plotops_bggrid, plotops_bgPV)
+```
+
+Supplementary Tables S1, S2, S3
+Printing out values to use in tables
+
+```{r}
+accgr1 <- as.data.frame(IOU_hhwacc_grid) %>%
+  select(-c("tothh","avgacc_pct","limit")) %>%
+  filter((threshold==0.0 & DER=="Load") | threshold==1.5 | threshold==5.0 | threshold==10.0) %>%
+  mutate(DER = ifelse(DER=="Load", "ICL", ifelse(DER=="PV, with OpFlex", "ICPVOF", ifelse(DER=="PV", "ICPV",
+          ifelse(DER=="Unif. Gen., w OF", "ICUGOF", "ICUG"))))) %>%
+  mutate(DER = paste0(DER," ",threshold)) %>% select(-c("threshold")) %>%
+  mutate(hhwacc_pct = round(hhwacc_pct*100, digits=0)) %>%
+  mutate(variable="full_territory")
+
+accgr1 <- dcast(accgr1, IOU+variable~DER, value.var="hhwacc_pct")
+
+#accgr2 <- rbind(PGE_accessbg_grid, SCE_accessbg_grid) %>%
+accgr2 <- rbind(PGE_accessbg_grid_re, SCE_accessbg_grid_re) %>%
+  select(c("IOU","PANEL","group","ymin","lower","middle","upper","ymax")) %>%
+  dplyr::rename("low"="ymin", "25th pctl"="lower", "median"="middle", "75th pctl"="upper", "high"="ymax") %>%
+  filter((group==1 & PANEL=="1") | group==2 | group==6 | group==11) %>%
+  mutate(group = as.numeric(group)-1, PANEL = as.integer(as.character(PANEL))) %>%
+  mutate(group = ifelse(group==1.0, 1.5, group)) %>%
+  mutate(DER = ifelse(PANEL==1, "ICL", ifelse(PANEL==2, "ICPVOF", ifelse(PANEL==3, "ICPV",
+                ifelse(PANEL==4, "ICUGOF", "ICUG"))))) %>%
+  mutate(DER = paste0(DER," ",group)) %>% select(-c("PANEL","group")) %>% 
+  melt(id=c("IOU","DER")) %>% 
+  mutate(value = round(value*100, digits=0))
+
+accgr2 <- dcast(accgr2, IOU+variable~DER, value.var="value")
+
+accgr <- rbind(accgr1, filter(accgr2, variable=="75th pctl"|variable=="median"|variable=="25th pctl")) %>%
+  select(c("IOU", "variable", "ICL 0", "ICL 1.5", "ICL 5", "ICL 10", "ICPVOF 1.5", "ICPVOF 5", "ICPVOF 10", 
+           "ICPV 1.5", "ICPV 5", "ICPV 10", "ICUGOF 1.5", "ICUGOF 5", "ICUGOF 10", "ICUG 1.5", "ICUG 5", "ICUG 10"))
+
+accgr[c(1,5,4,3,2,8,7,6), ]
+rm(accgr1,accgr2)
+```
+
+```{r}
+accrm1 <- rbind(as.data.frame(PGE_hhwacc_rs), as.data.frame(SCE_hhwacc_rs)) %>%
+  select(-c("tothh","avgacc_pct")) %>%
+  #filter(threshold==1.5) %>% filter(limit=="Rooftop" | scenario=="(mean)" | scenario=="-") %>% 
+  filter(threshold==1.5) %>% filter(limit=="Rooftop" | scenario=="(lower)" | scenario=="-") %>% 
+  mutate(limit = ifelse(limit=="Grid", "gr", ifelse(limit=="Best-case", "bc", ifelse(limit=="Worst-case", "wc", limit)))) %>%
+  mutate(DER = ifelse(DER=="Rooftop PV", paste0("Rooftop_",substr(scenario,2,2)), 
+                ifelse(DER=="PV, with OpFlex", paste0("ICPVOF_",limit), ifelse(DER=="PV", paste0("ICPV_",limit), DER)))) %>%
+  mutate(hhwacc_pct = round(hhwacc_pct*100, digits=0)) %>%
+  select(-c("threshold","limit","scenario")) %>% mutate(variable="full_territory")
+
+accrm1 <- dcast(accrm1, IOU+variable~DER, value.var="hhwacc_pct")
+
+#accrm2 <- rbind(PGE_accessbg_rm_re, SCE_accessbg_rm_re) %>%
+accrm2 <- rbind(PGE_accessbg_rl_re, SCE_accessbg_rl_re) %>%
+  select(c("IOU","PANEL","group","ymin","lower","middle","upper","ymax")) %>%
+  dplyr::rename("low"="ymin", "25th pctl"="lower", "median"="middle", "75th pctl"="upper", "high"="ymax") %>%
+  filter(group==1 | group==2 | group==3 | group==4) %>%
+  #mutate(group = ifelse(group==1,"rm", ifelse(group==2,"gr", ifelse(group==3,"bc", ifelse(group==4,"wc",group))))) %>%
+  mutate(group = ifelse(group==1,"rl", ifelse(group==2,"gr", ifelse(group==3,"bc", ifelse(group==4,"wc",group))))) %>%
+  #mutate(DER = ifelse(PANEL==1, "Rooftop_m", ifelse(PANEL==2, paste0("ICPVOF_",group), ifelse(PANEL==3, paste0("ICPV_",group), DER)))) %>%
+  mutate(DER = ifelse(PANEL==1, "Rooftop_l", ifelse(PANEL==2, paste0("ICPVOF_",group), ifelse(PANEL==3, paste0("ICPV_",group), DER)))) %>%
+  select(-c("PANEL","group")) %>%
+  melt(id=c("IOU","DER")) %>% 
+  mutate(value = round(value*100, digits=0))
+ 
+accrm2 <- dcast(accrm2, IOU+variable~DER, value.var="value") %>% 
+  #mutate(Rooftop_l = NA, Rooftop_u = NA)
+  mutate(Rooftop_m = NA, Rooftop_u = NA)
+
+accrm <- rbind(accrm1, filter(accrm2, variable=="75th pctl"|variable=="median"|variable=="25th pctl")) %>%
+  select(c("IOU", "variable", "Rooftop_l", "Rooftop_m", "Rooftop_u", "ICPVOF_gr", "ICPVOF_bc", "ICPVOF_wc", "ICPV_gr", "ICPV_bc", "ICPV_wc"))
+
+accrm[c(1,5,4,3,2,8,7,6), ]
+rm(accrm1,accrm2)
+```
+

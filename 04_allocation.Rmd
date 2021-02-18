@@ -1,0 +1,785 @@
+---
+title: "04_allocation"
+output: html_notebook
+---
+
+This notebook assigns hosting capacity to households
+
+```{r}
+library(tidyverse)
+library(tictoc)
+library(reshape2)
+library(ggplot2)
+library(stringr)
+library(tidytext)
+library(measurements) # https://cran.r-project.org/web/packages/measurements/measurements.pdf
+library(readxl)
+library(colorspace)
+```
+
+```{r}
+SCEtypes = read.csv("circuitfiles/SCE_ICAalldemoclasses.csv", header=T, na.strings="?")
+SCE_ICAalldemo = read.csv("circuitfiles/SCE_ICAalldemo.csv", header=T, na.strings="?", colClasses=as.character(SCEtypes$x))
+
+PGEtypes = read.csv("circuitfiles/PGE_ICAalldemoclasses.csv", header=T, na.strings="?")
+PGE_ICAalldemo = read.csv("circuitfiles/PGE_ICAalldemo.csv", header=T, na.strings="?", colClasses=as.character(PGEtypes$x))
+```
+
+--------------------------------------------------------------------------------------------
+
+REMAINING HOSTING CAPACITY
+
+--------------------------------------------------------------------------------------------
+
+Hosting capacity by household within circuit polygons, scaled by length
+
+```{r}
+SCE_ICAalldemo <- SCE_ICAalldemo %>% 
+  mutate(ICL_max_lenWt = ICL_max * Length_Wt,
+         ICPVOF_max_lenWt = ICPVOF_max * Length_Wt, ICPV_max_lenWt = ICPV_max * Length_Wt,
+         ICUGOF_max_lenWt = ICUGOF_max * Length_Wt, ICUG_max_lenWt = ICUG_max * Length_Wt) %>%
+  mutate(ICL_kWphh_len = ICL_max_lenWt / tothh_Cpoly *1000,
+         ICPVOF_kWphh_len = ICPVOF_max_lenWt / tothh_Cpoly *1000, ICPV_kWphh_len = ICPV_max_lenWt / tothh_Cpoly *1000,
+         ICUGOF_kWphh_len = ICUGOF_max_lenWt / tothh_Cpoly *1000, ICUG_kWphh_len = ICUG_max_lenWt / tothh_Cpoly *1000)
+
+PGE_ICAalldemo <- PGE_ICAalldemo %>% 
+  mutate(ICL_max_lenWt = ICL_max * Length_Wt,
+         ICPVOF_max_lenWt = ICPVOF_max * Length_Wt, ICPV_max_lenWt = ICPV_max * Length_Wt,
+         ICUGOF_max_lenWt = ICUGOF_max * Length_Wt, ICUG_max_lenWt = ICUG_max * Length_Wt) %>%
+  mutate(ICL_kWphh_len = ICL_max_lenWt / tothh_Cpoly,
+         ICPVOF_kWphh_len = ICPVOF_max_lenWt / tothh_Cpoly, ICPV_kWphh_len = ICPV_max_lenWt / tothh_Cpoly,
+         ICUGOF_kWphh_len = ICUGOF_max_lenWt / tothh_Cpoly, ICUG_kWphh_len = ICUG_max_lenWt / tothh_Cpoly)
+```
+
+Scaling hosting capacity by number of households; percent of households a circuit segment serves relative to the whole circuit
+
+```{r}
+SCE_ICAalldemo <- SCE_ICAalldemo %>%
+  mutate(ICL_max_hhWt = ICL_max * tothh_pct,
+         ICPVOF_max_hhWt = ICPVOF_max * tothh_pct, ICPV_max_hhWt = ICPV_max * tothh_pct,
+         ICUGOF_max_hhWt = ICUGOF_max * tothh_pct, ICUG_max_hhWt = ICUG_max * tothh_pct) %>%
+  mutate(ICL_kWphh_hh = ICL_max_hhWt / tothh_Cpoly *1000,
+         ICPVOF_kWphh_hh = ICPVOF_max_hhWt / tothh_Cpoly *1000, ICPV_kWphh_hh = ICPV_max_hhWt / tothh_Cpoly *1000,
+         ICUGOF_kWphh_hh = ICUGOF_max_hhWt / tothh_Cpoly *1000, ICUG_kWphh_hh = ICUG_max_hhWt / tothh_Cpoly *1000)
+
+PGE_ICAalldemo <- PGE_ICAalldemo %>%
+  mutate(ICL_max_hhWt = ICL_max * tothh_pct,
+         ICPVOF_max_hhWt = ICPVOF_max * tothh_pct, ICPV_max_hhWt = ICPV_max * tothh_pct,
+         ICUGOF_max_hhWt = ICUGOF_max * tothh_pct, ICUG_max_hhWt = ICUG_max * tothh_pct) %>%
+  mutate(ICL_kWphh_hh = ICL_max_hhWt / tothh_Cpoly,
+         ICPVOF_kWphh_hh = ICPVOF_max_hhWt / tothh_Cpoly, ICPV_kWphh_hh = ICPV_max_hhWt / tothh_Cpoly,
+         ICUGOF_kWphh_hh = ICUGOF_max_hhWt / tothh_Cpoly, ICUG_kWphh_hh = ICUG_max_hhWt / tothh_Cpoly)
+```
+
+To what extent does each weighting approach under- or over-estimate the total amount of hosting capacity available on a given circuit? To check, we want to see how much lower the overall ICA values are relative to the overall max.
+
+```{r}
+# calculating weighted quantities and normalization factors
+SCE_ICAcheck <- SCE_ICAalldemo %>%
+  select(CircuitName, Length_m, Length_m_ctot, Length_Wt, 
+         ICL_max_ctot, ICPVOF_max_ctot, ICPV_max_ctot, ICUGOF_max_ctot, ICUG_max_ctot, 
+         ICL_max_lenWt, ICPVOF_max_lenWt, ICPV_max_lenWt, ICUGOF_max_lenWt, ICUG_max_lenWt,
+         ICL_max_hhWt, ICPVOF_max_hhWt, ICPV_max_hhWt, ICUGOF_max_hhWt, ICUG_max_hhWt) %>%
+  group_by(CircuitName) %>%
+  summarise(Length_m = sum(Length_m, na.rm=TRUE),
+            Length_m_ctot = mean(Length_m_ctot, na.rm=TRUE),
+            Length_Wt_ctot = sum(Length_Wt, na.rm=TRUE),
+            nseg = n(),
+            ICL_max_ctot = mean(ICL_max_ctot, na.rm=TRUE),
+            ICPVOF_max_ctot = mean(ICPVOF_max_ctot, na.rm=TRUE), ICPV_max_ctot = mean(ICPV_max_ctot, na.rm=TRUE),
+            ICUGOF_max_ctot = mean(ICUGOF_max_ctot, na.rm=TRUE), ICUG_max_ctot = mean(ICUG_max_ctot, na.rm=TRUE),
+            ICL_max_lenWt = sum(ICL_max_lenWt, na.rm=TRUE),
+            ICPVOF_max_lenWt = sum(ICPVOF_max_lenWt, na.rm=TRUE), ICPV_max_lenWt = sum(ICPV_max_lenWt, na.rm=TRUE),
+            ICUGOF_max_lenWt = sum(ICUGOF_max_lenWt, na.rm=TRUE), ICUG_max_lenWt = sum(ICUG_max_lenWt, na.rm=TRUE),
+            ICL_max_hhWt = sum(ICL_max_hhWt, na.rm=TRUE),
+            ICPVOF_max_hhWt = sum(ICPVOF_max_hhWt, na.rm=TRUE), ICPV_max_hhWt = sum(ICPV_max_hhWt, na.rm=TRUE),
+            ICUGOF_max_hhWt = sum(ICUGOF_max_hhWt, na.rm=TRUE), ICUG_max_hhWt = sum(ICUG_max_hhWt, na.rm=TRUE)) %>%
+  mutate(normlen_ICL = ICL_max_lenWt/ICL_max_ctot,
+         normlen_ICPVOF = ICPVOF_max_lenWt/ICPVOF_max_ctot, normlen_ICPV = ICPV_max_lenWt/ICPV_max_ctot,
+         normlen_ICUGOF = ICUGOF_max_lenWt/ICUGOF_max_ctot, normlen_ICUG = ICUG_max_lenWt/ICUG_max_ctot) %>%
+  mutate(normhh_ICL = ICL_max_hhWt/ICL_max_ctot,
+         normhh_ICPVOF = ICPVOF_max_hhWt/ICPVOF_max_ctot, normhh_ICPV = ICPV_max_hhWt/ICPV_max_ctot,
+         normhh_ICUGOF = ICUGOF_max_hhWt/ICUGOF_max_ctot, normhh_ICUG = ICUG_max_hhWt/ICUG_max_ctot) %>%
+  mutate(normlen_ICL = ifelse((is.na(normlen_ICL)|is.infinite(normlen_ICL)|normlen_ICL==0), 1, normlen_ICL),
+         normlen_ICPVOF = ifelse((is.na(normlen_ICPVOF)|is.infinite(normlen_ICPVOF)|normlen_ICPVOF==0), 1, normlen_ICPVOF),
+         normlen_ICPV = ifelse((is.na(normlen_ICPV)|is.infinite(normlen_ICPV)|normlen_ICPV==0), 1, normlen_ICPV),
+         normlen_ICUGOF = ifelse((is.na(normlen_ICUGOF)|is.infinite(normlen_ICUGOF)|normlen_ICUGOF==0), 1, normlen_ICUGOF),
+         normlen_ICUG = ifelse((is.na(normlen_ICUG)|is.infinite(normlen_ICUG)|normlen_ICUG==0), 1, normlen_ICUG)) %>%
+  mutate(normhh_ICL = ifelse((is.na(normhh_ICL)|is.infinite(normhh_ICL)|normhh_ICL==0), 1, normhh_ICL),
+         normhh_ICPVOF = ifelse((is.na(normhh_ICPVOF)|is.infinite(normhh_ICPVOF)|normhh_ICPVOF==0), 1, normhh_ICPVOF),
+         normhh_ICPV = ifelse((is.na(normhh_ICPV)|is.infinite(normhh_ICPV)|normhh_ICPV==0), 1, normhh_ICPV),
+         normhh_ICUGOF = ifelse((is.na(normhh_ICUGOF)|is.infinite(normhh_ICUGOF)|normhh_ICUGOF==0), 1, normhh_ICUGOF),
+         normhh_ICUG = ifelse((is.na(normhh_ICUG)|is.infinite(normhh_ICUG)|normhh_ICUG==0), 1, normhh_ICUG))
+
+# merging normalization factors back into main file
+SCE_ICAalldemo <- merge(SCE_ICAalldemo, SCE_ICAcheck[, c("CircuitName", "normlen_ICL", "normlen_ICPVOF", "normlen_ICPV", "normlen_ICUGOF", "normlen_ICUG", "normhh_ICL", "normhh_ICPVOF", "normhh_ICPV", "normhh_ICUGOF", "normhh_ICUG")], by=c("CircuitName"), all.x=TRUE, suffixes = c("",""))
+
+# calculating normalized quantities
+SCE_ICAalldemo <- SCE_ICAalldemo %>%
+  mutate(ICL_max_lenWt_n = ICL_max_lenWt/normlen_ICL,
+         ICPVOF_max_lenWt_n = ICPVOF_max_lenWt/normlen_ICPVOF, ICPV_max_lenWt_n = ICPV_max_lenWt/normlen_ICPV,
+         ICUGOF_max_lenWt_n = ICUGOF_max_lenWt/normlen_ICUGOF, ICUG_max_lenWt_n = ICUG_max_lenWt/normlen_ICUG,
+         ICL_max_hhWt_n = ICL_max_hhWt/normhh_ICL,
+         ICPVOF_max_hhWt_n = ICPVOF_max_hhWt/normhh_ICPVOF, ICPV_max_hhWt_n = ICPV_max_hhWt/normhh_ICPV,
+         ICUGOF_max_hhWt_n = ICUGOF_max_hhWt/normhh_ICUGOF, ICUG_max_hhWt_n = ICUG_max_hhWt/normhh_ICUG) %>%
+  mutate(ICL_max_lenWt_nadj = ifelse(abs(ICL_max_lenWt_n)<abs(ICL_max), ICL_max_lenWt_n, ICL_max),
+         ICPVOF_max_lenWt_nadj = ifelse(abs(ICPVOF_max_lenWt_n)<abs(ICPVOF_max), ICPVOF_max_lenWt_n, ICPVOF_max),
+         ICPV_max_lenWt_nadj = ifelse(abs(ICPV_max_lenWt_n)<abs(ICPV_max), ICPV_max_lenWt_n, ICPV_max),
+         ICUGOF_max_lenWt_nadj = ifelse(abs(ICUGOF_max_lenWt_n)<abs(ICUGOF_max), ICUGOF_max_lenWt_n, ICUGOF_max),
+         ICUG_max_lenWt_nadj = ifelse(abs(ICUG_max_lenWt_n)<abs(ICUG_max), ICUG_max_lenWt_n, ICUG_max),
+         ICL_max_hhWt_nadj = ifelse(abs(ICL_max_hhWt_n)<abs(ICL_max), ICL_max_hhWt_n, ICL_max),
+         ICPVOF_max_hhWt_nadj = ifelse(abs(ICPVOF_max_hhWt_n)<abs(ICPVOF_max), ICPVOF_max_hhWt_n, ICPVOF_max),
+         ICPV_max_hhWt_nadj = ifelse(abs(ICPV_max_hhWt_n)<abs(ICPV_max), ICPV_max_hhWt_n, ICPV_max),
+         ICUGOF_max_hhWt_nadj = ifelse(abs(ICUGOF_max_hhWt_n)<abs(ICUGOF_max), ICUGOF_max_hhWt_n, ICUGOF_max),
+         ICUG_max_hhWt_nadj = ifelse(abs(ICUG_max_hhWt_n)<abs(ICUG_max), ICUG_max_hhWt_n, ICUG_max))
+
+# checking overall values
+SCE_ICAcheck2 <- SCE_ICAalldemo %>%
+  select(CircuitName, ends_with("_max_lenWt_n"), ends_with("_max_lenWt_nadj"), 
+         ends_with("_max_hhWt_n"), ends_with("_max_hhWt_nadj")) %>%
+  group_by(CircuitName) %>%
+  summarise(ICL_max_lenWt_n = sum(ICL_max_lenWt_n, na.rm=TRUE),
+            ICPVOF_max_lenWt_n = sum(ICPVOF_max_lenWt_n, na.rm=TRUE), ICPV_max_lenWt_n = sum(ICPV_max_lenWt_n, na.rm=TRUE),
+            ICUGOF_max_lenWt_n = sum(ICUGOF_max_lenWt_n, na.rm=TRUE), ICUG_max_lenWt_n = sum(ICUG_max_lenWt_n, na.rm=TRUE),
+            ICL_max_lenWt_nadj = sum(ICL_max_lenWt_nadj, na.rm=TRUE),
+            ICPVOF_max_lenWt_nadj = sum(ICPVOF_max_lenWt_nadj, na.rm=TRUE),
+            ICPV_max_lenWt_nadj = sum(ICPV_max_lenWt_nadj, na.rm=TRUE),
+            ICUGOF_max_lenWt_nadj = sum(ICUGOF_max_lenWt_nadj, na.rm=TRUE),
+            ICUG_max_lenWt_nadj = sum(ICUG_max_lenWt_nadj, na.rm=TRUE),
+            ICL_max_hhWt_n = sum(ICL_max_hhWt_n, na.rm=TRUE),
+            ICPVOF_max_hhWt_n = sum(ICPVOF_max_hhWt_n, na.rm=TRUE), ICPV_max_hhWt_n = sum(ICPV_max_hhWt_n, na.rm=TRUE),
+            ICUGOF_max_hhWt_n = sum(ICUGOF_max_hhWt_n, na.rm=TRUE), ICUG_max_hhWt_n = sum(ICUG_max_hhWt_n, na.rm=TRUE),
+            ICL_max_hhWt_nadj = sum(ICL_max_hhWt_nadj, na.rm=TRUE),
+            ICPVOF_max_hhWt_nadj = sum(ICPVOF_max_hhWt_nadj, na.rm=TRUE),
+            ICPV_max_hhWt_nadj = sum(ICPV_max_hhWt_nadj, na.rm=TRUE),
+            ICUGOF_max_hhWt_nadj = sum(ICUGOF_max_hhWt_nadj, na.rm=TRUE),
+            ICUG_max_hhWt_nadj = sum(ICUG_max_hhWt_nadj, na.rm=TRUE))
+
+SCE_ICAcheck <- merge(SCE_ICAcheck, SCE_ICAcheck2, by=c("CircuitName"), all.x=TRUE)
+rm(SCE_ICAcheck2)
+
+SCE_ICAcheck <- SCE_ICAcheck %>%
+  melt( id=c("CircuitName","Length_m","Length_m_ctot","Length_Wt_ctot","nseg",
+             "normlen_ICL","normlen_ICPVOF","normlen_ICPV","normlen_ICUGOF","normlen_ICUG",
+             "normhh_ICL","normhh_ICPVOF","normhh_ICPV","normhh_ICUGOF","normhh_ICUG")) %>%
+  mutate(DER = factor(recode(substr(variable,1,6), 
+                             'ICL_ma'="ICL", 'ICPVOF'="ICPVOF", 'ICPV_m'="ICPV", 'ICUGOF'="ICUGOF", 'ICUG_m'="ICUG"), 
+                      levels=c("ICPV","ICPVOF","ICUG","ICUGOF","ICL")),
+         type = factor(recode(str_sub(variable,-8,-1), 'max_ctot'="ctot", 
+                              'ax_lenWt'="lenWt", '_lenWt_n'="lenWt_n", 
+                              'max_hhWt'="hhWt", 'x_hhWt_n'="hhWt_n", 
+                              'nWt_nadj'="lenWt_nadj", 'hWt_nadj'="hhWt_nadj")))
+
+ggplot(SCE_ICAcheck, aes(x=type, y=value)) + geom_boxplot() + facet_grid(~DER) + 
+  theme(axis.text.x = element_text(angle=90, size=8)) + labs(x="",y="Hosting capacity (MW) per circuit")
+
+ggsave("SCE_ICAnormalization.png", path = "figures/", width=16, height=8)
+
+b <- SCE_ICAcheck %>% filter(type=="ctot" | type=="hhWt" | type=="hhWt_n" | type=="hhWt_nadj") %>%
+  ggplot( aes(x=type, y=value)) + geom_boxplot() + facet_grid(~DER, labeller=labeller(DER=labsDER)) + theme_light() +
+  theme(axis.text.x = element_text(angle=90, size=8)) + labs(x="",y="Hosting capacity (MW) per circuit")
+b
+
+ggsave("SCE_ICAnormhh.png", path = "figures/", width=5, height=4)
+```
+
+```{r}
+# calculating weighted quantities and normalization factors
+PGE_ICAcheck <- PGE_ICAalldemo %>%
+  select(CircuitName, Length_m, Length_m_ctot, Length_Wt, 
+         ICL_max_ctot, ICPVOF_max_ctot, ICPV_max_ctot, ICUGOF_max_ctot, ICUG_max_ctot, 
+         ICL_max_lenWt, ICPVOF_max_lenWt, ICPV_max_lenWt, ICUGOF_max_lenWt, ICUG_max_lenWt,
+         ICL_max_hhWt, ICPVOF_max_hhWt, ICPV_max_hhWt, ICUGOF_max_hhWt, ICUG_max_hhWt) %>%
+  group_by(CircuitName) %>%
+  summarise(Length_m = sum(Length_m, na.rm=TRUE),
+            Length_m_ctot = mean(Length_m_ctot, na.rm=TRUE),
+            Length_Wt_ctot = sum(Length_Wt, na.rm=TRUE),
+            nseg = n(),
+            ICL_max_ctot = mean(ICL_max_ctot, na.rm=TRUE),
+            ICPVOF_max_ctot = mean(ICPVOF_max_ctot, na.rm=TRUE), ICPV_max_ctot = mean(ICPV_max_ctot, na.rm=TRUE),
+            ICUGOF_max_ctot = mean(ICUGOF_max_ctot, na.rm=TRUE), ICUG_max_ctot = mean(ICUG_max_ctot, na.rm=TRUE),
+            ICL_max_lenWt = sum(ICL_max_lenWt, na.rm=TRUE),
+            ICPVOF_max_lenWt = sum(ICPVOF_max_lenWt, na.rm=TRUE), ICPV_max_lenWt = sum(ICPV_max_lenWt, na.rm=TRUE),
+            ICUGOF_max_lenWt = sum(ICUGOF_max_lenWt, na.rm=TRUE), ICUG_max_lenWt = sum(ICUG_max_lenWt, na.rm=TRUE),
+            ICL_max_hhWt = sum(ICL_max_hhWt, na.rm=TRUE),
+            ICPVOF_max_hhWt = sum(ICPVOF_max_hhWt, na.rm=TRUE), ICPV_max_hhWt = sum(ICPV_max_hhWt, na.rm=TRUE),
+            ICUGOF_max_hhWt = sum(ICUGOF_max_hhWt, na.rm=TRUE), ICUG_max_hhWt = sum(ICUG_max_hhWt, na.rm=TRUE)) %>%
+  mutate(normlen_ICL = ICL_max_lenWt/ICL_max_ctot,
+         normlen_ICPVOF = ICPVOF_max_lenWt/ICPVOF_max_ctot, normlen_ICPV = ICPV_max_lenWt/ICPV_max_ctot,
+         normlen_ICUGOF = ICUGOF_max_lenWt/ICUGOF_max_ctot, normlen_ICUG = ICUG_max_lenWt/ICUG_max_ctot) %>%
+  mutate(normhh_ICL = ICL_max_hhWt/ICL_max_ctot,
+         normhh_ICPVOF = ICPVOF_max_hhWt/ICPVOF_max_ctot, normhh_ICPV = ICPV_max_hhWt/ICPV_max_ctot,
+         normhh_ICUGOF = ICUGOF_max_hhWt/ICUGOF_max_ctot, normhh_ICUG = ICUG_max_hhWt/ICUG_max_ctot) %>%
+  mutate(normlen_ICL = ifelse((is.na(normlen_ICL)|is.infinite(normlen_ICL)|normlen_ICL==0), 1, normlen_ICL),
+         normlen_ICPVOF = ifelse((is.na(normlen_ICPVOF)|is.infinite(normlen_ICPVOF)|normlen_ICPVOF==0), 1, normlen_ICPVOF),
+         normlen_ICPV = ifelse((is.na(normlen_ICPV)|is.infinite(normlen_ICPV)|normlen_ICPV==0), 1, normlen_ICPV),
+         normlen_ICUGOF = ifelse((is.na(normlen_ICUGOF)|is.infinite(normlen_ICUGOF)|normlen_ICUGOF==0), 1, normlen_ICUGOF),
+         normlen_ICUG = ifelse((is.na(normlen_ICUG)|is.infinite(normlen_ICUG)|normlen_ICUG==0), 1, normlen_ICUG)) %>%
+  mutate(normhh_ICL = ifelse((is.na(normhh_ICL)|is.infinite(normhh_ICL)|normhh_ICL==0), 1, normhh_ICL),
+         normhh_ICPVOF = ifelse((is.na(normhh_ICPVOF)|is.infinite(normhh_ICPVOF)|normhh_ICPVOF==0), 1, normhh_ICPVOF),
+         normhh_ICPV = ifelse((is.na(normhh_ICPV)|is.infinite(normhh_ICPV)|normhh_ICPV==0), 1, normhh_ICPV),
+         normhh_ICUGOF = ifelse((is.na(normhh_ICUGOF)|is.infinite(normhh_ICUGOF)|normhh_ICUGOF==0), 1, normhh_ICUGOF),
+         normhh_ICUG = ifelse((is.na(normhh_ICUG)|is.infinite(normhh_ICUG)|normhh_ICUG==0), 1, normhh_ICUG))
+
+# merging normalization factors back into main file
+PGE_ICAalldemo <- merge(PGE_ICAalldemo, PGE_ICAcheck[, c("CircuitName", "normlen_ICL", "normlen_ICPVOF", "normlen_ICPV", "normlen_ICUGOF", "normlen_ICUG", "normhh_ICL", "normhh_ICPVOF", "normhh_ICPV", "normhh_ICUGOF", "normhh_ICUG")], by=c("CircuitName"), all.x=TRUE, suffixes = c("",""))
+
+# calculating normalized quantities
+PGE_ICAalldemo <- PGE_ICAalldemo %>%
+  mutate(ICL_max_lenWt_n = ICL_max_lenWt/normlen_ICL,
+         ICPVOF_max_lenWt_n = ICPVOF_max_lenWt/normlen_ICPVOF, ICPV_max_lenWt_n = ICPV_max_lenWt/normlen_ICPV,
+         ICUGOF_max_lenWt_n = ICUGOF_max_lenWt/normlen_ICUGOF, ICUG_max_lenWt_n = ICUG_max_lenWt/normlen_ICUG,
+         ICL_max_hhWt_n = ICL_max_hhWt/normhh_ICL,
+         ICPVOF_max_hhWt_n = ICPVOF_max_hhWt/normhh_ICPVOF, ICPV_max_hhWt_n = ICPV_max_hhWt/normhh_ICPV,
+         ICUGOF_max_hhWt_n = ICUGOF_max_hhWt/normhh_ICUGOF, ICUG_max_hhWt_n = ICUG_max_hhWt/normhh_ICUG) %>%
+  mutate(ICL_max_lenWt_nadj = ifelse(abs(ICL_max_lenWt_n)<abs(ICL_max), ICL_max_lenWt_n, ICL_max),
+         ICPVOF_max_lenWt_nadj = ifelse(abs(ICPVOF_max_lenWt_n)<abs(ICPVOF_max), ICPVOF_max_lenWt_n, ICPVOF_max),
+         ICPV_max_lenWt_nadj = ifelse(abs(ICPV_max_lenWt_n)<abs(ICPV_max), ICPV_max_lenWt_n, ICPV_max),
+         ICUGOF_max_lenWt_nadj = ifelse(abs(ICUGOF_max_lenWt_n)<abs(ICUGOF_max), ICUGOF_max_lenWt_n, ICUGOF_max),
+         ICUG_max_lenWt_nadj = ifelse(abs(ICUG_max_lenWt_n)<abs(ICUG_max), ICUG_max_lenWt_n, ICUG_max),
+         ICL_max_hhWt_nadj = ifelse(abs(ICL_max_hhWt_n)<abs(ICL_max), ICL_max_hhWt_n, ICL_max),
+         ICPVOF_max_hhWt_nadj = ifelse(abs(ICPVOF_max_hhWt_n)<abs(ICPVOF_max), ICPVOF_max_hhWt_n, ICPVOF_max),
+         ICPV_max_hhWt_nadj = ifelse(abs(ICPV_max_hhWt_n)<abs(ICPV_max), ICPV_max_hhWt_n, ICPV_max),
+         ICUGOF_max_hhWt_nadj = ifelse(abs(ICUGOF_max_hhWt_n)<abs(ICUGOF_max), ICUGOF_max_hhWt_n, ICUGOF_max),
+         ICUG_max_hhWt_nadj = ifelse(abs(ICUG_max_hhWt_n)<abs(ICUG_max), ICUG_max_hhWt_n, ICUG_max))
+
+# checking overall values
+PGE_ICAcheck2 <- PGE_ICAalldemo %>%
+  select(CircuitName, ends_with("_max_lenWt_n"), ends_with("_max_lenWt_nadj"), 
+         ends_with("_max_hhWt_n"), ends_with("_max_hhWt_nadj")) %>%
+  group_by(CircuitName) %>%
+  summarise(ICL_max_lenWt_n = sum(ICL_max_lenWt_n, na.rm=TRUE),
+            ICPVOF_max_lenWt_n = sum(ICPVOF_max_lenWt_n, na.rm=TRUE), ICPV_max_lenWt_n = sum(ICPV_max_lenWt_n, na.rm=TRUE),
+            ICUGOF_max_lenWt_n = sum(ICUGOF_max_lenWt_n, na.rm=TRUE), ICUG_max_lenWt_n = sum(ICUG_max_lenWt_n, na.rm=TRUE),
+            ICL_max_lenWt_nadj = sum(ICL_max_lenWt_nadj, na.rm=TRUE),
+            ICPVOF_max_lenWt_nadj = sum(ICPVOF_max_lenWt_nadj, na.rm=TRUE),
+            ICPV_max_lenWt_nadj = sum(ICPV_max_lenWt_nadj, na.rm=TRUE),
+            ICUGOF_max_lenWt_nadj = sum(ICUGOF_max_lenWt_nadj, na.rm=TRUE),
+            ICUG_max_lenWt_nadj = sum(ICUG_max_lenWt_nadj, na.rm=TRUE),
+            ICL_max_hhWt_n = sum(ICL_max_hhWt_n, na.rm=TRUE),
+            ICPVOF_max_hhWt_n = sum(ICPVOF_max_hhWt_n, na.rm=TRUE), ICPV_max_hhWt_n = sum(ICPV_max_hhWt_n, na.rm=TRUE),
+            ICUGOF_max_hhWt_n = sum(ICUGOF_max_hhWt_n, na.rm=TRUE), ICUG_max_hhWt_n = sum(ICUG_max_hhWt_n, na.rm=TRUE),
+            ICL_max_hhWt_nadj = sum(ICL_max_hhWt_nadj, na.rm=TRUE),
+            ICPVOF_max_hhWt_nadj = sum(ICPVOF_max_hhWt_nadj, na.rm=TRUE),
+            ICPV_max_hhWt_nadj = sum(ICPV_max_hhWt_nadj, na.rm=TRUE),
+            ICUGOF_max_hhWt_nadj = sum(ICUGOF_max_hhWt_nadj, na.rm=TRUE),
+            ICUG_max_hhWt_nadj = sum(ICUG_max_hhWt_nadj, na.rm=TRUE))
+
+PGE_ICAcheck <- merge(PGE_ICAcheck, PGE_ICAcheck2, by=c("CircuitName"), all.x=TRUE)
+rm(PGE_ICAcheck2)
+
+PGE_ICAcheck <- PGE_ICAcheck %>%
+  melt( id=c("CircuitName","Length_m","Length_m_ctot","Length_Wt_ctot","nseg",
+             "normlen_ICL","normlen_ICPVOF","normlen_ICPV","normlen_ICUGOF","normlen_ICUG",
+             "normhh_ICL","normhh_ICPVOF","normhh_ICPV","normhh_ICUGOF","normhh_ICUG")) %>%
+  mutate(DER = factor(recode(substr(variable,1,6), 
+                             'ICL_ma'="ICL", 'ICPVOF'="ICPVOF", 'ICPV_m'="ICPV", 'ICUGOF'="ICUGOF", 'ICUG_m'="ICUG"), 
+                      levels=c("ICPV","ICPVOF","ICUG","ICUGOF","ICL")),
+         type = factor(recode(str_sub(variable,-8,-1), 'max_ctot'="ctot", 
+                              'ax_lenWt'="lenWt", '_lenWt_n'="lenWt_n", 
+                              'max_hhWt'="hhWt", 'x_hhWt_n'="hhWt_n", 
+                              'nWt_nadj'="lenWt_nadj", 'hWt_nadj'="hhWt_nadj")))
+
+ggplot(PGE_ICAcheck, aes(x=type, y=value/1000)) + geom_boxplot() + facet_grid(~DER) + 
+  theme(axis.text.x = element_text(angle = 90, size=8)) + labs(x="",y="Hosting capacity (MW) per circuit")
+
+ggsave("PGE_ICAnormalization.png", path = "figures/", width=16, height=8)
+
+a <- PGE_ICAcheck %>% filter(type=="ctot" | type=="hhWt" | type=="hhWt_n" | type=="hhWt_nadj") %>%
+  ggplot( aes(x=type, y=value/1000)) + geom_boxplot() + facet_grid(~DER, labeller=labeller(DER=labsDER)) + theme_light() +
+  theme(axis.text.x = element_text(angle = 90, size=8)) + labs(x="",y="Hosting capacity (MW) per circuit")
+a
+
+ggsave("PGE_ICAnormhh.png", path = "figures/", width=5, height=4)
+```
+
+Supplementary Figure S7
+
+```{r}
+rbind(mutate(filter(PGE_ICAcheck, type=="ctot" | type=="hhWt" | type=="hhWt_n" | type=="hhWt_nadj"), IOU="PGE", value=value/1000),
+      mutate(filter(SCE_ICAcheck, type=="ctot" | type=="hhWt" | type=="hhWt_n" | type=="hhWt_nadj"), IOU="SCE")) %>%
+  ggplot( aes(x=type, y=value)) + geom_boxplot() + 
+  facet_grid(IOU~DER, scales="free_y", labeller=labeller(IOU=labsIOU, DER=labsDER)) + theme_light() +
+  theme(axis.text.x = element_text(angle=90, size=8)) + labs(x="Normalization method",y="Hosting capacity (MW) per circuit")
+
+#plot_grid(a, b, labels=c('a','b'), label_size=12)
+
+ggsave("IOU_normhh.png", path="figures/", width=8.5, height=5)
+ggsave("IOU_normhh.pdf", path="figures/", width=8.5, height=5)
+```
+
+
+
+Decision: We will base per-household kW calculations on the normalized & adjusted population-scaled values.
+
+```{r}
+SCE_ICAalldemo <- SCE_ICAalldemo %>%
+  mutate(ICL_kWphh = ICL_max_hhWt_nadj / tothh_Cpoly *1000,
+         ICPVOF_kWphh = ICPVOF_max_hhWt_nadj / tothh_Cpoly *1000,
+         ICPV_kWphh = ICPV_max_hhWt_nadj / tothh_Cpoly *1000,
+         ICUGOF_kWphh = ICUGOF_max_hhWt_nadj / tothh_Cpoly *1000,
+         ICUG_kWphh = ICUG_max_hhWt_nadj / tothh_Cpoly *1000) %>%
+  mutate(ICL_kWphh_cap = ifelse(ICL_kWphh>=50, 50, ifelse(ICL_kWphh<=-10, -10, ICL_kWphh)),
+         ICPVOF_kWphh_cap = ifelse(ICPVOF_kWphh>=50, 50, ifelse(ICPVOF_kWphh<=-10, -10, ICPVOF_kWphh)),
+         ICPV_kWphh_cap = ifelse(ICPV_kWphh>=50, 50, ifelse(ICPV_kWphh<=-10, -10, ICPV_kWphh)),
+         ICUGOF_kWphh_cap = ifelse(ICUGOF_kWphh>=50, 50, ifelse(ICUGOF_kWphh<=-10, -10, ICUGOF_kWphh)),
+         ICUG_kWphh_cap = ifelse(ICUG_kWphh>=50, 50, ifelse(ICUG_kWphh<=-10, -10, ICUG_kWphh)))
+
+PGE_ICAalldemo <- PGE_ICAalldemo %>%
+  mutate(ICL_kWphh = ICL_max_hhWt_nadj / tothh_Cpoly,
+         ICPVOF_kWphh = ICPVOF_max_hhWt_nadj / tothh_Cpoly,
+         ICPV_kWphh = ICPV_max_hhWt_nadj / tothh_Cpoly,
+         ICUGOF_kWphh = ICUGOF_max_hhWt_nadj / tothh_Cpoly,
+         ICUG_kWphh = ICUG_max_hhWt_nadj / tothh_Cpoly) %>%
+  mutate(ICL_kWphh_cap = ifelse(ICL_kWphh>=50, 50, ifelse(ICL_kWphh<=-10, -10, ICL_kWphh)),
+         ICPVOF_kWphh_cap = ifelse(ICPVOF_kWphh>=50, 50, ifelse(ICPVOF_kWphh<=-10, -10, ICPVOF_kWphh)),
+         ICPV_kWphh_cap = ifelse(ICPV_kWphh>=50, 50, ifelse(ICPV_kWphh<=-10, -10, ICPV_kWphh)),
+         ICUGOF_kWphh_cap = ifelse(ICUGOF_kWphh>=50, 50, ifelse(ICUGOF_kWphh<=-10, -10, ICUGOF_kWphh)),
+         ICUG_kWphh_cap = ifelse(ICUG_kWphh>=50, 50, ifelse(ICUG_kWphh<=-10, -10, ICUG_kWphh)))
+```
+
+Check: is the hosting capacity on any circuit/block group combo greater than its allowed value?
+
+```{r}
+nrow(SCE_ICAalldemo %>% filter(ICL_max_lenWt_n > ICL_max) %>% select(CircuitName, starts_with("ICL_")))
+nrow(SCE_ICAalldemo %>% filter(ICPVOF_max_lenWt_n > ICPVOF_max) %>% select(CircuitName, starts_with("ICPVOF_")))
+nrow(SCE_ICAalldemo %>% filter(ICPV_max_lenWt_n > ICPV_max) %>% select(CircuitName, starts_with("ICPV_")))
+nrow(SCE_ICAalldemo %>% filter(ICUGOF_max_lenWt_n > ICUGOF_max) %>% select(CircuitName, starts_with("ICUGOF_")))
+nrow(SCE_ICAalldemo %>% filter(ICUG_max_lenWt_n > ICUG_max) %>%
+  #filter(CircuitName=="ACALA") %>%
+  select(CircuitName, starts_with("ICUG_")))
+
+nrow(SCE_ICAalldemo %>% filter(ICL_max_hhWt_n > ICL_max) %>% 
+       select(CircuitName, Length_Wt, tothh_pct, starts_with("ICL_"), normlen_ICL, normhh_ICL))
+
+nrow(SCE_ICAalldemo %>% filter(ICPVOF_max_hhWt_n > ICPVOF_max) %>% 
+       select(CircuitName, Length_Wt, tothh_pct, starts_with("ICPVOF_"), normlen_ICPVOF, normhh_ICPVOF))
+
+nrow(SCE_ICAalldemo %>% filter(ICPV_max_hhWt_n > ICPV_max) %>% 
+       select(CircuitName, Length_Wt, tothh_pct, starts_with("ICPV_"), normlen_ICPV, normhh_ICPV))
+
+nrow(SCE_ICAalldemo %>% filter(ICUGOF_max_hhWt_n > ICUGOF_max) %>% 
+       select(CircuitName, Length_Wt, tothh_pct, starts_with("ICUGOF_"), normlen_ICUGOF, normhh_ICUGOF))
+
+nrow(SCE_ICAalldemo %>% filter(ICUG_max_hhWt_n > ICUG_max) %>% 
+       select(CircuitName, Length_Wt, tothh_pct, starts_with("ICUG_"), normlen_ICUG, normhh_ICUG))
+```
+
+```{r}
+nrow(PGE_ICAalldemo %>% filter(ICL_max_lenWt_n > ICL_max) %>% select(CircuitName, starts_with("ICL_")))
+nrow(PGE_ICAalldemo %>% filter(ICPVOF_max_lenWt_n > ICPVOF_max) %>% select(CircuitName, starts_with("ICPVOF_")))
+nrow(PGE_ICAalldemo %>% filter(ICPV_max_lenWt_n > ICPV_max) %>% select(CircuitName, starts_with("ICPV_")))
+nrow(PGE_ICAalldemo %>% filter(ICUGOF_max_lenWt_n > ICUGOF_max) %>% select(CircuitName, starts_with("ICUGOF_")))
+nrow(PGE_ICAalldemo %>% filter(ICUG_max_lenWt_n > ICUG_max) %>%
+  #filter(CircuitName=="ACALA") %>%
+  select(CircuitName, starts_with("ICUG_")))
+
+nrow(PGE_ICAalldemo %>% filter(ICL_max_hhWt_n > ICL_max) %>% 
+       select(CircuitName, Length_Wt, tothh_pct, starts_with("ICL_"), normlen_ICL, normhh_ICL))
+
+nrow(PGE_ICAalldemo %>% filter(ICPVOF_max_hhWt_n > ICPVOF_max) %>% 
+       select(CircuitName, Length_Wt, tothh_pct, starts_with("ICPVOF_"), normlen_ICPVOF, normhh_ICPVOF))
+
+nrow(PGE_ICAalldemo %>% filter(ICPV_max_hhWt_n > ICPV_max) %>% 
+       select(CircuitName, Length_Wt, tothh_pct, starts_with("ICPV_"), normlen_ICPV, normhh_ICPV))
+
+nrow(PGE_ICAalldemo %>% filter(ICUGOF_max_hhWt_n > ICUGOF_max) %>% 
+       select(CircuitName, Length_Wt, tothh_pct, starts_with("ICUGOF_"), normlen_ICUGOF, normhh_ICUGOF))
+
+nrow(PGE_ICAalldemo %>% filter(ICUG_max_hhWt_n > ICUG_max) %>% 
+       select(CircuitName, Length_Wt, tothh_pct, starts_with("ICUG_"), normlen_ICUG, normhh_ICUG))
+```
+
+
+--------------------------------------------------------------------------------------------
+
+EXISTING HOSTING CAPACITY
+
+--------------------------------------------------------------------------------------------
+
+Creating variables that incorporate DG that is already on the circuit
+We will use "ExistDG" for this, weighted by...
+
+...just the percentage of households served by that circuit polygon
+...for PG&E, we first scale by the percentage of households on the circuit served by lines with ICA info
+
+```{r}
+SCE_ICAalldemo <- SCE_ICAalldemo %>% 
+  mutate(existdg_kWphh = (ExistDG*1000*tothh_pct)/tothh_Cpoly) %>%
+  mutate(ICL_e_kWphh = ICL_kWphh,
+         ICPVOF_e_kWphh = ICPVOF_kWphh + existdg_kWphh, ICPV_e_kWphh = ICPV_kWphh + existdg_kWphh,
+         ICUGOF_e_kWphh = ICUGOF_kWphh + existdg_kWphh, ICUG_e_kWphh = ICUG_kWphh + existdg_kWphh) %>%
+  mutate(ICL_e_kWphh_cap = ifelse(ICL_e_kWphh>=50, 50, ifelse(ICL_e_kWphh<=-10, -10, ICL_e_kWphh)),
+         ICPVOF_e_kWphh_cap = ifelse(ICPVOF_e_kWphh>=50, 50, ifelse(ICPVOF_e_kWphh<=-10, -10, ICPVOF_e_kWphh)),
+         ICPV_e_kWphh_cap = ifelse(ICPV_e_kWphh>=50, 50, ifelse(ICPV_e_kWphh<=-10, -10, ICPV_e_kWphh)),
+         ICUGOF_e_kWphh_cap = ifelse(ICUGOF_e_kWphh>=50, 50, ifelse(ICUGOF_e_kWphh<=-10, -10, ICUGOF_e_kWphh)),
+         ICUG_e_kWphh_cap = ifelse(ICUG_e_kWphh>=50, 50, ifelse(ICUG_e_kWphh<=-10, -10, ICUG_e_kWphh)))
+
+PGE_ICAalldemo <- PGE_ICAalldemo %>% 
+  mutate(existdg_kWphh = (ExistDG*tothhICA_pct*tothh_pct)/tothh_Cpoly) %>%
+  mutate(ICL_e_kWphh = ICL_kWphh,
+         ICPVOF_e_kWphh = ICPVOF_kWphh + existdg_kWphh, ICPV_e_kWphh = ICPV_kWphh + existdg_kWphh,
+         ICUGOF_e_kWphh = ICUGOF_kWphh + existdg_kWphh, ICUG_e_kWphh = ICUG_kWphh + existdg_kWphh) %>%
+  mutate(ICL_e_kWphh_cap = ifelse(ICL_e_kWphh>=50, 50, ifelse(ICL_e_kWphh<=-10, -10, ICL_e_kWphh)),
+         ICPVOF_e_kWphh_cap = ifelse(ICPVOF_e_kWphh>=50, 50, ifelse(ICPVOF_e_kWphh<=-10, -10, ICPVOF_e_kWphh)),
+         ICPV_e_kWphh_cap = ifelse(ICPV_e_kWphh>=50, 50, ifelse(ICPV_e_kWphh<=-10, -10, ICPV_e_kWphh)),
+         ICUGOF_e_kWphh_cap = ifelse(ICUGOF_e_kWphh>=50, 50, ifelse(ICUGOF_e_kWphh<=-10, -10, ICUGOF_e_kWphh)),
+         ICUG_e_kWphh_cap = ifelse(ICUG_e_kWphh>=50, 50, ifelse(ICUG_e_kWphh<=-10, -10, ICUG_e_kWphh)))
+```
+
+
+---> CODE TO NEXT ARROW WAS TESTING OTHER ALLOCATION METHODS, CAN OMIT
+
+...the relative amount of solar by zip code (z) from tracking the sun data
+Multiple zip codes may be matched to one block group. To join existing PV capacity by zip code data, we will take the average of the PV_kWpm2 of the matched zip codes and multiply them by the area of the circuit polygon.
+
+```{r}
+coltypes = read.csv("../../data/solardeployment/TrackingTheSun/tts19zipCAtypes.csv", header=T, na.strings="?")
+tts19zipCA = read.csv("../../data/solardeployment/TrackingTheSun/tts19zipCA.csv", header=T, na.strings="?", 
+                      colClasses=as.character(coltypes$x))
+
+zcta = read.csv("../geography/tl_2010_06_zcta510/tl_2010_06_zcta510_CalAlbers.csv", header=T, na.strings="?")
+
+tts19zipCA <- tts19zipCA %>% mutate(zip = as.integer(zip)) %>%
+  merge(zcta[,c("ZCTA5CE10","zcta_m2")], by.x=c("zip"), by.y=c("ZCTA5CE10"), all.x=TRUE) %>%
+  mutate(PV_kWpkm2 = System.Size / zcta_m2*1000000,
+         zip = as.character(zip),
+         IOU = as.character(recode(Utility.Service.Territory, 'Pacific Gas and Electric'="PGE", 
+                      'Southern California Edison'="SCE", 'San Diego Gas and Electric'="SDGE", 
+                      'Sacramento Municipal Utility District'="SMUD", 'Los Angeles Department of Water & Power'="LADWP")))
+```
+
+```{r}
+SCE_zip <- SCE_ICAaccess[,c("CircuitName","GEOID10","ZCTA","zip_ct")] %>%
+  mutate(IOU = "SCE") %>%
+  mutate(nzip = nchar(ZCTA)/5) %>%
+  mutate(zip = ifelse(nzip>=1,ZCTA,zip_ct)) %>%
+  mutate(nzip = nchar(zip)/5) %>%
+  mutate(zip1 = substr(zip,1,5), zip2 = ifelse(nzip>1, substr(zip,6,10), NA), 
+         zip3 = ifelse(nzip>2, substr(zip,11,15), NA), zip4 = ifelse(nzip>3, substr(zip,16,20), NA), 
+         zip5 = ifelse(nzip>4, substr(zip,21,25), NA), zip6 = ifelse(nzip>5, substr(zip,26,30), NA),
+         zip7 = ifelse(nzip>6, substr(zip,31,35), NA)) %>%
+  merge(tts19zipCA[,c("zip","IOU","PV_kWpkm2")], by.x=c("zip1","IOU"), by.y=c("zip","IOU"), all.x=TRUE) %>%
+  dplyr::rename("PV_kWpkm2_1"="PV_kWpkm2") %>%
+  merge(tts19zipCA[,c("zip","IOU","PV_kWpkm2")], by.x=c("zip2","IOU"), by.y=c("zip","IOU"), all.x=TRUE) %>%
+  dplyr::rename("PV_kWpkm2_2"="PV_kWpkm2") %>%
+  merge(tts19zipCA[,c("zip","IOU","PV_kWpkm2")], by.x=c("zip3","IOU"), by.y=c("zip","IOU"), all.x=TRUE) %>%
+  dplyr::rename("PV_kWpkm2_3"="PV_kWpkm2") %>%
+  merge(tts19zipCA[,c("zip","IOU","PV_kWpkm2")], by.x=c("zip4","IOU"), by.y=c("zip","IOU"), all.x=TRUE) %>%
+  dplyr::rename("PV_kWpkm2_4"="PV_kWpkm2") %>%
+  merge(tts19zipCA[,c("zip","IOU","PV_kWpkm2")], by.x=c("zip5","IOU"), by.y=c("zip","IOU"), all.x=TRUE) %>%
+  dplyr::rename("PV_kWpkm2_5"="PV_kWpkm2") %>%
+  merge(tts19zipCA[,c("zip","IOU","PV_kWpkm2")], by.x=c("zip6","IOU"), by.y=c("zip","IOU"), all.x=TRUE) %>%
+  dplyr::rename("PV_kWpkm2_6"="PV_kWpkm2") %>%
+  merge(tts19zipCA[,c("zip","IOU","PV_kWpkm2")], by.x=c("zip7","IOU"), by.y=c("zip","IOU"), all.x=TRUE) %>%
+  dplyr::rename("PV_kWpkm2_7"="PV_kWpkm2") %>%
+  mutate(PV_kWpkm2 = rowMeans(select(., c("PV_kWpkm2_1", "PV_kWpkm2_2", "PV_kWpkm2_3", "PV_kWpkm2_4", 
+                                          "PV_kWpkm2_5", "PV_kWpkm2_6", "PV_kWpkm2_7")), na.rm=TRUE))
+  
+summary(as.factor(SCE_zip$nzip))
+```
+
+```{r}
+PGE_zip <- PGE_ICAaccess[,c("CircuitName","GEOID10","ZCTA","zip_ct")] %>%
+  mutate(IOU = "PGE") %>%
+  mutate(nzip = nchar(ZCTA)/5) %>%
+  mutate(zip = ifelse(nzip>=1,ZCTA,zip_ct)) %>%
+  mutate(nzip = nchar(zip)/5) %>%
+  mutate(zip1 = substr(zip,1,5), zip2 = ifelse(nzip>1, substr(zip,6,10), NA), 
+         zip3 = ifelse(nzip>2, substr(zip,11,15), NA), zip4 = ifelse(nzip>3, substr(zip,16,20), NA), 
+         zip5 = ifelse(nzip>4, substr(zip,21,25), NA), zip6 = ifelse(nzip>5, substr(zip,26,30), NA),
+         zip7 = ifelse(nzip>6, substr(zip,31,35), NA)) %>%
+  merge(tts19zipCA[,c("zip","IOU","PV_kWpkm2")], by.x=c("zip1","IOU"), by.y=c("zip","IOU"), all.x=TRUE) %>%
+  dplyr::rename("PV_kWpkm2_1"="PV_kWpkm2") %>%
+  merge(tts19zipCA[,c("zip","IOU","PV_kWpkm2")], by.x=c("zip2","IOU"), by.y=c("zip","IOU"), all.x=TRUE) %>%
+  dplyr::rename("PV_kWpkm2_2"="PV_kWpkm2") %>%
+  merge(tts19zipCA[,c("zip","IOU","PV_kWpkm2")], by.x=c("zip3","IOU"), by.y=c("zip","IOU"), all.x=TRUE) %>%
+  dplyr::rename("PV_kWpkm2_3"="PV_kWpkm2") %>%
+  merge(tts19zipCA[,c("zip","IOU","PV_kWpkm2")], by.x=c("zip4","IOU"), by.y=c("zip","IOU"), all.x=TRUE) %>%
+  dplyr::rename("PV_kWpkm2_4"="PV_kWpkm2") %>%
+  merge(tts19zipCA[,c("zip","IOU","PV_kWpkm2")], by.x=c("zip5","IOU"), by.y=c("zip","IOU"), all.x=TRUE) %>%
+  dplyr::rename("PV_kWpkm2_5"="PV_kWpkm2") %>%
+  merge(tts19zipCA[,c("zip","IOU","PV_kWpkm2")], by.x=c("zip6","IOU"), by.y=c("zip","IOU"), all.x=TRUE) %>%
+  dplyr::rename("PV_kWpkm2_6"="PV_kWpkm2") %>%
+  merge(tts19zipCA[,c("zip","IOU","PV_kWpkm2")], by.x=c("zip7","IOU"), by.y=c("zip","IOU"), all.x=TRUE) %>%
+  dplyr::rename("PV_kWpkm2_7"="PV_kWpkm2") %>%
+  mutate(PV_kWpkm2 = rowMeans(select(., c("PV_kWpkm2_1", "PV_kWpkm2_2", "PV_kWpkm2_3", "PV_kWpkm2_4", 
+                                          "PV_kWpkm2_5", "PV_kWpkm2_6", "PV_kWpkm2_7")), na.rm=TRUE))
+  
+summary(as.factor(PGE_zip$nzip))
+```
+
+```{r}
+SCE_ICAalldemo <- SCE_ICAalldemo %>% 
+  merge(SCE_zip[,c("CircuitName","GEOID10","PV_kWpkm2")], by=c("CircuitName","GEOID10"), all.x=TRUE) %>%
+  mutate(PV_kW = PV_kWpkm2/1000000 * CpolyA)
+
+SCE_solar <- SCE_ICAalldemo[,c("CircuitName","GEOID10","PV_kW")] %>% 
+  group_by(CircuitName) %>% summarise(PV_kW_ctot = sum(PV_kW, na.rm=TRUE))
+
+SCE_ctotpoly = read.csv("circuitfiles/SCE_ctotpoly.csv", header=T, na.strings="?")
+SCE_ctotpoly <- SCE_ctotpoly %>% merge(SCE_solar, by=c("CircuitName"), all.x=TRUE)
+
+SCE_ICAalldemo <- SCE_ICAalldemo %>% merge(SCE_solar, by=c("CircuitName"), all.x=TRUE) %>%
+  mutate(PV_kW_pct = PV_kW / PV_kW_ctot) %>%
+  mutate(#ICL_e_kWphh = ICL_kWphh + (ExistDG*1000*tothh_pct)/tothh_Cpoly,
+         ICPVOF_z_kWphh = ICPVOF_kWphh + (ExistDG*1000*PV_kW_pct)/tothh_Cpoly, 
+         ICPV_z_kWphh = ICPV_kWphh + (ExistDG*1000*PV_kW_pct)/tothh_Cpoly,
+         ICUGOF_z_kWphh = ICUGOF_kWphh + (ExistDG*1000*PV_kW_pct)/tothh_Cpoly, 
+         ICUG_z_kWphh = ICUG_kWphh + (ExistDG*1000*PV_kW_pct)/tothh_Cpoly) %>%
+  mutate(#ICL_e_kWphh_cap = ifelse(ICL_e_kWphh>=50, 50, ifelse(ICL_e_kWphh<=-10, -10, ICL_e_kWphh)),
+         ICPVOF_z_kWphh_cap = ifelse(ICPVOF_z_kWphh>=50, 50, ifelse(ICPVOF_z_kWphh<=-10, -10, ICPVOF_z_kWphh)),
+         ICPV_z_kWphh_cap = ifelse(ICPV_z_kWphh>=50, 50, ifelse(ICPV_z_kWphh<=-10, -10, ICPV_z_kWphh)),
+         ICUGOF_z_kWphh_cap = ifelse(ICUGOF_z_kWphh>=50, 50, ifelse(ICUGOF_z_kWphh<=-10, -10, ICUGOF_z_kWphh)),
+         ICUG_z_kWphh_cap = ifelse(ICUG_z_kWphh>=50, 50, ifelse(ICUG_z_kWphh<=-10, -10, ICUG_z_kWphh)))
+
+summary(SCE_ICAalldemo$PV_kW_pct)
+```
+
+```{r}
+PGE_ICAalldemo <- PGE_ICAalldemo %>% 
+  merge(PGE_zip[,c("CircuitName","GEOID10","PV_kWpkm2")], by=c("CircuitName","GEOID10"), all.x=TRUE) %>%
+  mutate(PV_kW = PV_kWpkm2/1000000 * CpolyA)
+
+PGE_solar <- PGE_ICAalldemo[,c("CircuitName","GEOID10","PV_kW")] %>% 
+  group_by(CircuitName) %>% summarise(PV_kW_ctot = sum(PV_kW, na.rm=TRUE))
+
+PGE_ctotpoly = read.csv("circuitfiles/PGE_ctotpoly.csv", header=T, na.strings="?")
+PGE_ctotpoly <- PGE_ctotpoly %>% merge(PGE_solar, by=c("CircuitName"), all.x=TRUE)
+
+PGE_ICAalldemo <- PGE_ICAalldemo %>% merge(PGE_solar, by=c("CircuitName"), all.x=TRUE) %>%
+  mutate(PV_kW_pct = PV_kW / PV_kW_ctot) %>%
+  mutate(#ICL_e_kWphh = ICL_kWphh + (ExistDG*tothh_pct)/tothh_Cpoly,
+         ICPVOF_z_kWphh = ICPVOF_kWphh + (ExistDG*PV_kW_pct)/tothh_Cpoly, 
+         ICPV_z_kWphh = ICPV_kWphh + (ExistDG*PV_kW_pct)/tothh_Cpoly,
+         ICUGOF_z_kWphh = ICUGOF_kWphh + (ExistDG*PV_kW_pct)/tothh_Cpoly, 
+         ICUG_z_kWphh = ICUG_kWphh + (ExistDG*PV_kW_pct)/tothh_Cpoly) %>%
+  mutate(#ICL_e_kWphh_cap = ifelse(ICL_e_kWphh>=50, 50, ifelse(ICL_e_kWphh<=-10, -10, ICL_e_kWphh)),
+         ICPVOF_z_kWphh_cap = ifelse(ICPVOF_z_kWphh>=50, 50, ifelse(ICPVOF_z_kWphh<=-10, -10, ICPVOF_z_kWphh)),
+         ICPV_z_kWphh_cap = ifelse(ICPV_z_kWphh>=50, 50, ifelse(ICPV_z_kWphh<=-10, -10, ICPV_z_kWphh)),
+         ICUGOF_z_kWphh_cap = ifelse(ICUGOF_z_kWphh>=50, 50, ifelse(ICUGOF_z_kWphh<=-10, -10, ICUGOF_z_kWphh)),
+         ICUG_z_kWphh_cap = ifelse(ICUG_z_kWphh>=50, 50, ifelse(ICUG_z_kWphh<=-10, -10, ICUG_z_kWphh)))
+
+summary(PGE_ICAalldemo$PV_kW_pct)
+```
+
+...the relative amount of solar potential by census tract (t) from project sunroof data
+
+```{r}
+ps = read.csv("../../data/solardeployment/ProjectSunroof/projsunroof_kWbyct.csv", header=T, na.strings="?", 
+              colClasses=c("character","factor","numeric"))
+ct = read.csv("../geography/tl_2010_06_tract10/tl_2010_06_tract10_CalAlbers.csv", header=T, na.strings="?",
+              colClasses=c(rep("integer",4),"character","numeric",rep("factor",3),rep("numeric",5)))
+
+ps <- ps %>% subset(state_name=="California") %>%
+  merge(ct[,c("GEOID10","Area")], by.x=c("region_name"), by.y=c("GEOID10"), all.x=TRUE) %>%
+  mutate(state_name = as.character(state_name),
+         PV_kWpkm2 = kw_total/Area*1000000)
+```
+
+```{r}
+SCE_ICAalldemo <- SCE_ICAalldemo %>% 
+  merge(ps[,c("region_name","PV_kWpkm2")], by.x=c("GEOIDCT"), by.y=c("region_name"), all.x=TRUE, suffixes=c("","_t")) %>%
+  mutate(PV_kW = PV_kWpkm2_t/1000000 * CpolyA)
+
+SCE_solar <- SCE_ICAalldemo[,c("CircuitName","GEOID10","PV_kW")] %>% 
+  group_by(CircuitName) %>% summarise(PV_kW_ctot = sum(PV_kW, na.rm=TRUE))
+
+SCE_ctotpoly <- SCE_ctotpoly %>% merge(SCE_solar, by=c("CircuitName"), all.x=TRUE, suffixes=c("","_t"))
+
+SCE_ICAalldemo <- SCE_ICAalldemo %>% merge(SCE_solar, by=c("CircuitName"), all.x=TRUE, suffixes=c("","_t")) %>%
+  mutate(PV_kW_pct = PV_kW / PV_kW_ctot_t) %>%
+  mutate(#ICL_e_kWphh = ICL_kWphh + (ExistDG*1000*tothh_pct)/tothh_Cpoly,
+         ICPVOF_t_kWphh = ICPVOF_kWphh + (ExistDG*1000*PV_kW_pct)/tothh_Cpoly, 
+         ICPV_t_kWphh = ICPV_kWphh + (ExistDG*1000*PV_kW_pct)/tothh_Cpoly,
+         ICUGOF_t_kWphh = ICUGOF_kWphh + (ExistDG*1000*PV_kW_pct)/tothh_Cpoly, 
+         ICUG_t_kWphh = ICUG_kWphh + (ExistDG*1000*PV_kW_pct)/tothh_Cpoly) %>%
+  mutate(#ICL_e_kWphh_cap = ifelse(ICL_e_kWphh>=50, 50, ifelse(ICL_e_kWphh<=-10, -10, ICL_e_kWphh)),
+         ICPVOF_t_kWphh_cap = ifelse(ICPVOF_t_kWphh>=50, 50, ifelse(ICPVOF_t_kWphh<=-10, -10, ICPVOF_t_kWphh)),
+         ICPV_t_kWphh_cap = ifelse(ICPV_t_kWphh>=50, 50, ifelse(ICPV_t_kWphh<=-10, -10, ICPV_t_kWphh)),
+         ICUGOF_t_kWphh_cap = ifelse(ICUGOF_t_kWphh>=50, 50, ifelse(ICUGOF_t_kWphh<=-10, -10, ICUGOF_t_kWphh)),
+         ICUG_t_kWphh_cap = ifelse(ICUG_t_kWphh>=50, 50, ifelse(ICUG_t_kWphh<=-10, -10, ICUG_t_kWphh)))
+
+summary(SCE_ICAalldemo$PV_kW_pct)
+```
+
+```{r}
+PGE_ICAalldemo <- PGE_ICAalldemo %>% 
+  merge(ps[,c("region_name","PV_kWpkm2")], by.x=c("GEOIDCT"), by.y=c("region_name"), all.x=TRUE, suffixes=c("","_t")) %>%
+  mutate(PV_kW = PV_kWpkm2_t/1000000 * CpolyA)
+
+PGE_solar <- PGE_ICAalldemo[,c("CircuitName","GEOID10","PV_kW")] %>% 
+  group_by(CircuitName) %>% summarise(PV_kW_ctot = sum(PV_kW, na.rm=TRUE))
+
+PGE_ctotpoly <- PGE_ctotpoly %>% merge(PGE_solar, by=c("CircuitName"), all.x=TRUE, suffixes=c("","_t"))
+
+PGE_ICAalldemo <- PGE_ICAalldemo %>% merge(PGE_solar, by=c("CircuitName"), all.x=TRUE, suffixes=c("","_t")) %>%
+  mutate(PV_kW_pct = PV_kW / PV_kW_ctot_t) %>%
+  mutate(#ICL_e_kWphh = ICL_kWphh + (ExistDG*1000*tothh_pct)/tothh_Cpoly,
+         ICPVOF_t_kWphh = ICPVOF_kWphh + (ExistDG*PV_kW_pct)/tothh_Cpoly, 
+         ICPV_t_kWphh = ICPV_kWphh + (ExistDG*PV_kW_pct)/tothh_Cpoly,
+         ICUGOF_t_kWphh = ICUGOF_kWphh + (ExistDG*PV_kW_pct)/tothh_Cpoly, 
+         ICUG_t_kWphh = ICUG_kWphh + (ExistDG*PV_kW_pct)/tothh_Cpoly) %>%
+  mutate(#ICL_e_kWphh_cap = ifelse(ICL_e_kWphh>=50, 50, ifelse(ICL_e_kWphh<=-10, -10, ICL_e_kWphh)),
+         ICPVOF_t_kWphh_cap = ifelse(ICPVOF_t_kWphh>=50, 50, ifelse(ICPVOF_t_kWphh<=-10, -10, ICPVOF_t_kWphh)),
+         ICPV_t_kWphh_cap = ifelse(ICPV_t_kWphh>=50, 50, ifelse(ICPV_t_kWphh<=-10, -10, ICPV_t_kWphh)),
+         ICUGOF_t_kWphh_cap = ifelse(ICUGOF_t_kWphh>=50, 50, ifelse(ICUGOF_t_kWphh<=-10, -10, ICUGOF_t_kWphh)),
+         ICUG_t_kWphh_cap = ifelse(ICUG_t_kWphh>=50, 50, ifelse(ICUG_t_kWphh<=-10, -10, ICUG_t_kWphh)))
+
+summary(PGE_ICAalldemo$PV_kW_pct)
+```
+
+...the relative amount of residential PV panel area from DeepSolar
+
+```{r}
+dsCA = read.csv("../../data/solardeployment/DeepSolar/deepsolarCA.csv", header=T, na.strings="?", 
+              colClasses=c(rep("character",3),rep("numeric",8)))
+```
+
+```{r}
+SCE_ICAalldemo <- SCE_ICAalldemo %>% 
+  merge(dsCA[,c("fips","PVresm2pkm2")], by.x=c("GEOIDCT"), by.y=c("fips"), all.x=TRUE, suffixes=c("","_d")) %>%
+  mutate(PVresm2_cpoly = PVresm2pkm2*CpolyA/1000000)
+
+SCE_solar <- SCE_ICAalldemo[,c("CircuitName","GEOID10","PVresm2_cpoly")] %>% 
+  group_by(CircuitName) %>% summarise(PVresm2_ctot = sum(PVresm2_cpoly, na.rm=TRUE))
+
+SCE_ctotpoly <- SCE_ctotpoly %>% merge(SCE_solar, by=c("CircuitName"), all.x=TRUE, suffixes=c("","_d"))
+
+SCE_ICAalldemo <- SCE_ICAalldemo %>% merge(SCE_solar, by=c("CircuitName"), all.x=TRUE, suffixes=c("","_d")) %>%
+  mutate(PVres_pct = ifelse(PVresm2_ctot==0, tothh_pct, PVresm2_cpoly/PVresm2_ctot)) %>%
+  mutate(#ICL_e_kWphh = ICL_kWphh + (ExistDG*1000*tothh_pct)/tothh_Cpoly,
+         ICPVOF_d_kWphh = ICPVOF_kWphh + (ExistDG*1000*PVres_pct)/tothh_Cpoly, 
+         ICPV_d_kWphh = ICPV_kWphh + (ExistDG*1000*PVres_pct)/tothh_Cpoly,
+         ICUGOF_d_kWphh = ICUGOF_kWphh + (ExistDG*1000*PVres_pct)/tothh_Cpoly, 
+         ICUG_d_kWphh = ICUG_kWphh + (ExistDG*1000*PVres_pct)/tothh_Cpoly) %>%
+  mutate(#ICL_e_kWphh_cap = ifelse(ICL_e_kWphh>=50, 50, ifelse(ICL_e_kWphh<=-10, -10, ICL_e_kWphh)),
+         ICPVOF_d_kWphh_cap = ifelse(ICPVOF_d_kWphh>=50, 50, ifelse(ICPVOF_d_kWphh<=-10, -10, ICPVOF_d_kWphh)),
+         ICPV_d_kWphh_cap = ifelse(ICPV_d_kWphh>=50, 50, ifelse(ICPV_d_kWphh<=-10, -10, ICPV_d_kWphh)),
+         ICUGOF_d_kWphh_cap = ifelse(ICUGOF_d_kWphh>=50, 50, ifelse(ICUGOF_d_kWphh<=-10, -10, ICUGOF_d_kWphh)),
+         ICUG_d_kWphh_cap = ifelse(ICUG_d_kWphh>=50, 50, ifelse(ICUG_d_kWphh<=-10, -10, ICUG_d_kWphh)))
+
+summary(SCE_ICAalldemo$PVres_pct)
+```
+
+```{r}
+PGE_ICAalldemo <- PGE_ICAalldemo %>% 
+  merge(dsCA[,c("fips","PVresm2pkm2")], by.x=c("GEOIDCT"), by.y=c("fips"), all.x=TRUE, suffixes=c("","_d")) %>%
+  mutate(PVresm2_cpoly = PVresm2pkm2*CpolyA/1000000)
+
+PGE_solar <- PGE_ICAalldemo[,c("CircuitName","GEOID10","PVresm2_cpoly")] %>% 
+  group_by(CircuitName) %>% summarise(PVresm2_ctot = sum(PVresm2_cpoly, na.rm=TRUE))
+
+PGE_ctotpoly <- PGE_ctotpoly %>% merge(PGE_solar, by=c("CircuitName"), all.x=TRUE, suffixes=c("","_d"))
+
+PGE_ICAalldemo <- PGE_ICAalldemo %>% merge(PGE_solar, by=c("CircuitName"), all.x=TRUE, suffixes=c("","_d")) %>%
+  mutate(PVres_pct = ifelse(PVresm2_ctot==0, tothh_pct, PVresm2_cpoly/PVresm2_ctot)) %>%
+  mutate(#ICL_e_kWphh = ICL_kWphh + (ExistDG*1000*tothh_pct)/tothh_Cpoly,
+         ICPVOF_d_kWphh = ICPVOF_kWphh + (ExistDG*PVres_pct)/tothh_Cpoly, 
+         ICPV_d_kWphh = ICPV_kWphh + (ExistDG*PVres_pct)/tothh_Cpoly,
+         ICUGOF_d_kWphh = ICUGOF_kWphh + (ExistDG*PVres_pct)/tothh_Cpoly, 
+         ICUG_d_kWphh = ICUG_kWphh + (ExistDG*PVres_pct)/tothh_Cpoly) %>%
+  mutate(#ICL_e_kWphh_cap = ifelse(ICL_e_kWphh>=50, 50, ifelse(ICL_e_kWphh<=-10, -10, ICL_e_kWphh)),
+         ICPVOF_d_kWphh_cap = ifelse(ICPVOF_d_kWphh>=50, 50, ifelse(ICPVOF_d_kWphh<=-10, -10, ICPVOF_d_kWphh)),
+         ICPV_d_kWphh_cap = ifelse(ICPV_d_kWphh>=50, 50, ifelse(ICPV_d_kWphh<=-10, -10, ICPV_d_kWphh)),
+         ICUGOF_d_kWphh_cap = ifelse(ICUGOF_d_kWphh>=50, 50, ifelse(ICUGOF_d_kWphh<=-10, -10, ICUGOF_d_kWphh)),
+         ICUG_d_kWphh_cap = ifelse(ICUG_d_kWphh>=50, 50, ifelse(ICUG_d_kWphh<=-10, -10, ICUG_d_kWphh)))
+
+summary(PGE_ICAalldemo$PVres_pct)
+```
+
+---> END OF CODE THAT CAN BE OMITTED
+
+Conclusion: We will find in 05_access.Rmd that scaling our allocations of existing generation within a circuit by the locations of existing distributed generation (PV) by zip code and census tract does not substantially impact our results. So, we will just use the percentage of households served by a given circuit polygon to scale existing generation.
+
+
+
+Cleaning up infinite values:
+
+```{r}
+SCE_ICAalldemo[mapply(is.infinite, SCE_ICAalldemo)] <- NA
+PGE_ICAalldemo[mapply(is.infinite, PGE_ICAalldemo)] <- NA
+```
+
+
+Example circuit for writeup (Supplementary Table S4)
+
+```{r}
+SCE_ICAalldemo %>% filter(CircuitName=="ACADEMY") %>%
+  mutate(Length_Wt = Length_Wt*100, tothh_pct = tothh_pct*100) %>%
+  #mutate_if(is.numeric, round) %>%
+  select(ICPV_max, ICPV_max_ctot, ExistDG, Length_m, Length_Wt, tothh_Cpoly, tothh_pct, starts_with("ICPV_max_hh"), normhh_ICPV, ICPV_kWphh, ICPV_e_kWphh, existdg_kWphh) #%>%
+  #colSums(na.rm = TRUE, dims = 1)
+```
+
+
+
+--------------------------------------------------------------------------------------------
+
+EXPORTING
+
+--------------------------------------------------------------------------------------------
+
+Rename & subset to remove unrealistic population totals:
+
+```{r}
+PGE_ICAalldemo <- PGE_ICAalldemo %>% dplyr::rename("SAIDI5yravg"="SAIDI3a5yravg")
+
+SCE_ICAalldemo_real = subset(SCE_ICAalldemo, tothh_Cpoly >= 1)
+PGE_ICAalldemo_real = subset(PGE_ICAalldemo, tothh_Cpoly >= 1)
+
+SCE_ICAalldemo <- SCE_ICAalldemo %>% mutate(Cpoly = paste0(GEOID10," ",CircuitName))
+PGE_ICAalldemo <- PGE_ICAalldemo %>% mutate(Cpoly = paste0(GEOID10," ",CircuitName))
+```
+
+Exporting data
+
+```{r}
+write.csv(SCE_ICAalldemo, file="circuitfiles/SCE_ICAalldemoalloc.csv", row.names=FALSE)
+write.csv(SCE_ICAalldemo_real, file="circuitfiles/SCE_ICAalldemorealalloc.csv", row.names=FALSE)
+
+write.csv(PGE_ICAalldemo, file="circuitfiles/PGE_ICAalldemoalloc.csv", row.names=FALSE)
+write.csv(PGE_ICAalldemo_real, file="circuitfiles/PGE_ICAalldemorealalloc.csv", row.names=FALSE)
+
+PGEtypes <- sapply(PGE_ICAalldemo,class)
+SCEtypes <- sapply(SCE_ICAalldemo,class)
+
+write.csv(PGEtypes, file="circuitfiles/PGE_ICAalldemoallocclasses.csv", row.names=FALSE)
+write.csv(SCEtypes, file="circuitfiles/SCE_ICAalldemoallocclasses.csv", row.names=FALSE)
+```
+
+
+Cleaned-up files to use in random forests and linear and logistic regression runs
+
+```{r}
+idanddepfeatures = c("CircuitName","GEOID10","ICL_kWphh","ICPVOF_kWphh","ICPV_kWphh","ICUGOF_kWphh","ICUG_kWphh",
+                     "ICL_kWphh_cap","ICPVOF_kWphh_cap","ICPV_kWphh_cap","ICUGOF_kWphh_cap","ICUG_kWphh_cap",
+                     "ICPVOF_e_kWphh","ICPV_e_kWphh","ICUGOF_e_kWphh","ICUG_e_kWphh",
+                     "ICPVOF_e_kWphh_cap","ICPV_e_kWphh_cap","ICUGOF_e_kWphh_cap","ICUG_e_kWphh_cap")
+infrfeatures = c("CircVolt_kV","Length_m","Length_m_ctot") #"ExistDG","QueueDG",
+servgeofeatures = c("ResCust","Res_pct","Com_pct","Ind_pct","Agr_pct","Oth_pct",
+                    "tothh_Cpoly","tothh_ctot","tothh_pct","tothh_perkm","SAIDI5yravg","urbanheat_pctl","ghi_kWhpm2day")
+demofeatures = c("tothh", "racediversity", "black_pct", "asian_pct", "nlxwhite_pct", "latinx_pct", 
+                 "inc50kbelow_pct", "inc150kplus_pct", "medhhinc", "edavgyrs", 
+                 "ownerocc_pct", "singleunit_pct", "unitsavg", "medyrbuilt", "hhdensity_fctr", "hhdensity_hhsqkm",
+                 "polexposure_pctl", "polenvt_pctl", "popsens_pctl", "lingisolation_pctl", "sb535disad")
+
+write.csv(SCE_ICAalldemo[, c("Cpoly", idanddepfeatures, infrfeatures, "Phase_max", "Phase_min", "CLSmax", "CLSmin", 
+                             #"ProjLoad_MW", "CurrPen_Pct", "MxRemGen_MW", "x15PenCp_MW", "DelivNote", 
+                             servgeofeatures, demofeatures)], 
+          file="circuitfiles/SCE_ICAalldemotrees.csv", row.names=FALSE)
+
+write.csv(SCE_ICAalldemo_real[, c(idanddepfeatures, infrfeatures, "Phase_max", "Phase_min", "CLSmax", "CLSmin", 
+                                  #"ProjLoad_MW", "CurrPen_Pct", "MxRemGen_MW", "x15PenCp_MW", "DelivNote", 
+                                  servgeofeatures, demofeatures)], 
+          file="circuitfiles/SCE_ICAalldemotrees_real.csv", row.names=FALSE)
+
+write.csv(PGE_ICAalldemo[, c("Cpoly", idanddepfeatures, infrfeatures, "ICA_pct", servgeofeatures, demofeatures)], 
+          file="circuitfiles/PGE_ICAalldemotrees.csv", row.names=FALSE)
+
+write.csv(PGE_ICAalldemo_real[, c(idanddepfeatures, infrfeatures, "ICA_pct", servgeofeatures, demofeatures)], 
+          file="circuitfiles/PGE_ICAalldemotrees_real.csv", row.names=FALSE)
+```
+
+
+
