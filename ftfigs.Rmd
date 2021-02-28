@@ -1,0 +1,1035 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This file analyzes the relationships between different features in the data and hosting capacity
+
+```{r}
+library(Hmisc)
+library(boot)
+library(fANCOVA)
+library(gridExtra)
+library(cowplot)
+#library(facetscales)
+#library(broom)
+#library(bootstrap)
+set.seed(2)
+
+get_legend<-function(myggplot){
+  tmp <- ggplot_gtable(ggplot_build(myggplot))
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+  legend <- tmp$grobs[[leg]]
+  return(legend)
+}
+```
+
+```{r}
+demof = c("tothh", "racediversity", "black_pct", "asian_pct", "nlxwhite_pct", "latinx_pct", 
+                 "inc50kbelow_pct", "inc150kplus_pct", "medhhinc", "edavgyrs", 
+                 "ownerocc_pct", "singleunit_pct", "unitsavg", "medyrbuilt", "hhdensity_hhsqkm",
+                 "polexposure_pctl", "polenvt_pctl", "popsens_pctl", "lingisolation_pctl")
+
+cols = c("GEOID10","CircuitName","IOU","tothh_Cpoly",
+         "ICL_e_kWphh_cap","ICPVOF_e_kWphh_cap","ICPV_e_kWphh_cap","ICUGOF_e_kWphh_cap","ICUG_e_kWphh_cap",
+         "ICPVOF_kWphh_cap","ICPV_kWphh_cap","ICUGOF_kWphh_cap","ICUG_kWphh_cap")
+
+lvlsDER = c("existdg","ICPV","ICPVOF","ICL")
+```
+
+Setting up dataframe to define plotting parameters for demographic variable plots (e.g., Figures 4 and 5)
+
+```{r}
+featscales <- data.frame(feature=c("Length_m","Length_m_ctot","ResCust"),
+                         f_min=c(0,0,0), f_max=c(260000,700000,7200), f_cap=c(100000,400000,7200),
+                         f_binwidth=c(5000,20000,200), f_div=c(1000,1000,1000), y_liml=c(-2,-2,0), y_limh=c(10,12,16),
+                         f_xlab=c("Length of circuit segment (km)", "Length of full circuit (km)", 
+                                  "Residential customers served by circuit (thousands)"),
+                         f_cat=c("infra_","infra_","serv_cust_"))
+featscales <- rbind(featscales, 
+                    data.frame(feature=c("Res_pct","Com_pct","Ind_pct","Agr_pct","Oth_pct"),
+                               f_min=c(0,0,0,0,0), f_max=c(100,100,85,95,100), f_cap=c(100,100,85,95,100),
+                               f_binwidth=c(5,5,5,5,5), f_div=c(1,1,1,1,1), y_liml=c(0,0,0,0,0), y_limh=c(50,50,50,50,50),
+                               f_xlab=c("Residential customers served by circuit (%)", "Commercial customers served by circuit (%)", 
+                                        "Industrial customers served by circuit (%)", "Agricultural customers served by circuit (%)", 
+                                        "Other customers served by circuit (%)"),
+                               f_cat=c("serv_cust_","serv_cust_","serv_cust_","serv_cust_","serv_cust_")))
+featscales <- rbind(featscales,
+                    data.frame(feature=c("tothh_Cpoly","tothh_ctot","tothh_pct","tothh_perkm"),
+                               f_min=c(0,0,0,0), f_max=c(1800,8200,1,130000), f_cap=c(1000,6000,1,1000),
+                               f_binwidth=c(40,200,0.05,40), f_div=c(1,1000,.01,1), y_liml=c(0,0,0,0), y_limh=c(12,35,50,32),
+                               f_xlab=c("Households in circuit polygon", "Households served by circuit (thousands)", 
+                                        "Households served by circuit polygon relative to full circuit (%)", 
+                                        "Households per km of circuit line"),
+                               f_cat=c("serv_","serv_","serv_","serv_")))
+featscales <- rbind(featscales,
+                    data.frame(feature=c("SAIDI5yravg","urbanheat_pctl","ghi_kWhpm2day"),
+                               f_min=c(0,0,3.8), f_max=c(55000,100,6.2), f_cap=c(500,100,6.2),
+                               f_binwidth=c(25,5,0.1), f_div=c(1,1,1), y_liml=c(0,0,0), y_limh=c(15,12,50),
+                               f_xlab=c("SAIDI 5-year average (2012-16)", "Urban heat indicator (percentile)", 
+                                        "Global horizontal irradiance (kWh/m^2/day)"),
+                               f_cat=c("serv_","geo_","geo_")))
+featscales <- rbind(featscales,
+                    data.frame(feature=c("racediversity", "black_pct", "asian_pct", "nlxwhite_pct", "latinx_pct"),
+                               f_min=c(0,0,0,0,0), f_max=c(1,1,1,1,1), f_cap=c(1,1,1,1,1), f_binwidth=c(.05,.05,.05,.05,.05), 
+                               f_div=c(.01,.01,.01,.01,.01), y_liml=c(0,-4,-2,0,0), y_limh=c(8,10,10,12.5,10),
+                               f_xlab=c("Racial and ethnic diversity in the population (1: more diverse)", 
+                                        "Population identifying as Black (%)", "Population identifying as Asian (%)",
+                                        "Population identifying as non-Latinx white (%)", "Population identifying as Latinx (%)"),
+                               f_cat=c("demo_race_","demo_race_","demo_race_","demo_race_","demo_race_")))
+featscales <- rbind(featscales,
+                    data.frame(feature=c("inc50kbelow_pct", "inc150kplus_pct", "medhhinc"),
+                               f_min=c(0,0,0), f_max=c(1,1,250000), f_cap=c(1,1,250000),
+                               f_binwidth=c(0.05,0.05,10000), f_div=c(.01,.01,1000), y_liml=c(0,0,0), y_limh=c(12,15,12),
+                               f_xlab=c("Households earning $50k or less annually (%)", "Households earning $150k or more annually (%)",
+                                        "Median household income ($1000)"), f_cat=c("demo_inc_","demo_inc_","demo_inc_")))
+featscales <- rbind(featscales,
+                    data.frame(feature=c("ownerocc_pct","singleunit_pct","unitsavg","medyrbuilt"),
+                               f_min=c(0,0,1,1938), f_max=c(1,1,50,2012), f_cap=c(1,1,25,2012),
+                               f_binwidth=c(0.05,0.05,1,2), f_div=c(.01,.01,1,1), y_liml=c(0,0,0,0), y_limh=c(12,12,12,30),
+                               f_xlab=c("Owner-occupied households (%)", "Single-unit residential housing (%)", 
+                                        "Average number of units in residential building", "Median year built"), 
+                               f_cat=c("demo_hs_","demo_hs_","demo_hs_","demo_hs_")))
+featscales <- rbind(featscales,
+                    data.frame(feature=c("tothh","edavgyrs","hhdensity_hhsqkm"),
+                               f_min=c(0,0,0), f_max=c(4600,20,44000), f_cap=c(4000,20,10000),
+                               f_binwidth=c(200,1,250), f_div=c(1,1,1000), y_liml=c(0,0,-1), y_limh=c(35,40,10),
+                               f_xlab=c("Households in block group", "Average years of education",
+                                        "Household density (thousand households per sq.km.)"), f_cat=c("demo_","demo_","demo_")))
+featscales <- rbind(featscales,
+                     data.frame(feature=c("polexposure_pctl","polenvt_pctl","popsens_pctl","lingisolation_pctl"),
+                               f_min=c(0,0,0,0), f_max=c(100,100,100,100), f_cap=c(100,100,100,100),
+                               f_binwidth=c(5,5,5,5), f_div=c(1,1,1,1), y_liml=c(0,0,0,0), y_limh=c(20,20,16,12),
+                               f_xlab=c("Pollution burden - exposure (percentile)", "Pollution burden - environment (percentile)",
+                                        "Sensitive population (percentile)", "Linguistic isolation (percentile)"),
+                               f_cat=c("demo_ces_","demo_ces_","demo_ces_","demo_ces_")))
+
+featscales <- featscales %>% 
+  mutate(feature = as.character(feature), f_xlab = as.character(f_xlab), f_cat = as.character(f_cat)) %>%
+  mutate(span_SCE_existdg=NA, span_SCE_ICL=NA, span_SCE_ICPVOF=NA, span_SCE_ICPV=NA,
+         span_PGE_existdg=NA, span_PGE_ICL=NA, span_PGE_ICPVOF=NA, span_PGE_ICPV=NA)
+
+featscales <- rbind(featscales,
+                    data.frame(feature=c("nlxwhite_black_pct","nlxwhite_asian_pct","nlxwhite_latinx_pct"),
+                               f_min=c(0,0,0), f_max=c(1,1,1), f_cap=c(1,1,1),
+                               f_binwidth=c(0.05,0.05,0.05), f_div=c(0.01,0.01,0.01), y_liml=c(NA,NA,NA), y_limh=c(NA,NA,NA),
+                               f_xlab=c("Population identifying as Black (%)","Population identifying as Asian (%)",
+                                        "Population identifying as Latinx (%)"), f_cat=c("demo_race_","demo_race_","demo_race_"), 
+                               span_SCE_existdg=c(NA,NA,NA), span_SCE_ICL=c(NA,NA,NA), span_SCE_ICPVOF=c(NA,NA,NA), 
+                               span_SCE_ICPV=c(NA,NA,NA), span_PGE_existdg=c(NA,NA,NA), span_PGE_ICL=c(NA,NA,NA), 
+                               span_PGE_ICPVOF=c(NA,NA,NA), span_PGE_ICPV=c(NA,NA,NA)))
+
+featscales <- rbind(featscales,
+                    data.frame(feature=c("latinx_black_pct","latinx_asian_pct","asian_black_pct"),
+                               f_min=c(0,0,0), f_max=c(1,1,1), f_cap=c(1,1,1),
+                               f_binwidth=c(0.05,0.05,0.05), f_div=c(0.01,0.01,0.01), y_liml=c(NA,NA,NA), y_limh=c(NA,NA,NA),
+                               f_xlab=c("Population identifying as Black (%)","Population identifying as Asian (%)", 
+                                        "Population identifying as Black (%)"), f_cat=c("demo_race_","demo_race_","demo_race_"), 
+                               span_SCE_existdg=c(NA,NA,NA), span_SCE_ICL=c(NA,NA,NA), span_SCE_ICPVOF=c(NA,NA,NA), 
+                               span_SCE_ICPV=c(NA,NA,NA), span_PGE_existdg=c(NA,NA,NA), span_PGE_ICL=c(NA,NA,NA), 
+                               span_PGE_ICPVOF=c(NA,NA,NA), span_PGE_ICPV=c(NA,NA,NA)))
+```
+
+
+--------------------------------------------------------------------------------------------
+
+LOESS PLOTS
+
+--------------------------------------------------------------------------------------------
+
+
+Calculating optimal span parameters for loess plots
+--------------------------------------------------------------------------------------------
+
+```{r}
+for (i in 1:34){ #i=17
+  df = rbind(select(PGE_ICAalldemo, c(cols, featscales[i,"feature"])), select(SCE_ICAalldemo, c(cols, featscales[i,"feature"]))) 
+  df = df[which(!is.na(df[[featscales[i,"feature"]]])),]
+  df$var_bin = as.numeric(as.character(cut(df[[featscales[i,"feature"]]], 
+        breaks=seq(featscales[i,"f_min"], featscales[i,"f_max"], by=featscales[i,"f_binwidth"]), 
+        labels=seq(featscales[i,"f_min"], featscales[i,"f_max"]-featscales[i,"f_binwidth"], by=featscales[i,"f_binwidth"]))))
+  df$var_bin = ifelse(df$var_bin>featscales[i,"f_cap"], featscales[i,"f_cap"], df$var_bin)
+  df$var_bin = ifelse(df[[featscales[i,"feature"]]]==featscales[i,"f_min"], featscales[i,"f_min"], df$var_bin)
+  df <- df %>% na.omit() %>% mutate(tothh_Cpoly_int = round(tothh_Cpoly*1000000,0)) %>% group_by(var_bin, IOU) %>%
+    summarise(existdg = wtd.quantile(ICPVOF_e_kWphh_cap-ICPVOF_kWphh_cap, probs=0.5, 
+                                      weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              ICL = wtd.quantile(ICL_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              ICPVOF = wtd.quantile(ICPVOF_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]], 
+              ICPV = wtd.quantile(ICPV_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              ICUGOF = wtd.quantile(ICUGOF_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]], 
+              ICUG = wtd.quantile(ICUG_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              tothh_Cpoly = sum(tothh_Cpoly, na.rm=TRUE)) %>% as.data.frame()
+  
+  for (j in c("PGE","SCE")){ df_IOU <- df %>% subset(IOU==j)
+    
+    for (k in c("existdg","ICL","ICPVOF","ICPV")){
+      lobj <- loess.as(df_IOU$var_bin, df_IOU[[k]], weights=df_IOU$tothh_Cpoly, degree=2, criterion="gcv", plot=FALSE)
+      featscales[[paste0("span_",j,"_",k)]][i] = lobj$pars$span
+}}}
+rm(lobj, df_IOU)
+
+
+ftsp <- featscales[,c("feature","f_cat","span_PGE_existdg","span_PGE_ICL","span_PGE_ICPVOF","span_PGE_ICPV",
+                      "span_SCE_existdg","span_SCE_ICL","span_SCE_ICPVOF","span_SCE_ICPV")] %>%
+  melt(id=c("feature","f_cat")) %>% 
+  mutate(variable=as.character(variable),
+         IOU=sapply(strsplit(variable, "_"), function(x) x[2]),
+         DER=sapply(strsplit(variable, "_"), function(x) x[3])) %>% dplyr::rename("span"="value")
+```
+
+
+Calculating confidence intervals via bootstrapped loess
+--------------------------------------------------------------------------------------------
+
+```{r}
+lowessdf <- function(i){ i=17
+  df = rbind(select(PGE_ICAalldemo, c(cols, featscales[i,"feature"])), select(SCE_ICAalldemo, c(cols, featscales[i,"feature"]))) 
+  df = df[which(!is.na(df[[featscales[i,"feature"]]])),]
+  df$var_bin = as.numeric(as.character(cut(df[[featscales[i,"feature"]]], 
+        breaks=seq(featscales[i,"f_min"], featscales[i,"f_max"], by=featscales[i,"f_binwidth"]), 
+        labels=seq(featscales[i,"f_min"], featscales[i,"f_max"]-featscales[i,"f_binwidth"], by=featscales[i,"f_binwidth"]))))
+  df$var_bin = ifelse(df$var_bin>featscales[i,"f_cap"], featscales[i,"f_cap"], df$var_bin)
+  df$var_bin = ifelse(df[[featscales[i,"feature"]]]==featscales[i,"f_min"], featscales[i,"f_min"], df$var_bin)
+  df <- df %>% na.omit() %>% mutate(tothh_Cpoly_int = round(tothh_Cpoly*1000000,0)) %>% group_by(var_bin, IOU) %>%
+    summarise(existdg = wtd.quantile(ICPVOF_e_kWphh_cap-ICPVOF_kWphh_cap, probs=0.5, 
+                                      weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              ICL = wtd.quantile(ICL_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              ICPVOF = wtd.quantile(ICPVOF_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]], 
+              ICPV = wtd.quantile(ICPV_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              #ICUGOF = wtd.quantile(ICUGOF_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]], 
+              #ICUG = wtd.quantile(ICUG_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              tothh_Cpoly = sum(tothh_Cpoly, na.rm=TRUE)) %>% as.data.frame() %>% 
+    melt(id=c("var_bin","tothh_Cpoly","IOU")) %>% na.omit() %>%
+    mutate(DER = factor(variable, levels=c("existdg","ICL","ICPVOF","ICPV")), 
+           IOU = factor(IOU, levels=c("PGE","SCE")))
+  return(df)
+}
+```
+
+```{r}
+tic()
+for (i in 1:34){
+
+df = rbind(select(PGE_ICAalldemo, c(cols, featscales[i,"feature"])), select(SCE_ICAalldemo, c(cols, featscales[i,"feature"]))) 
+  df = df[which(!is.na(df[[featscales[i,"feature"]]])),]
+  df$var_bin = as.numeric(as.character(cut(df[[featscales[i,"feature"]]], 
+        breaks=seq(featscales[i,"f_min"], featscales[i,"f_max"], by=featscales[i,"f_binwidth"]), 
+        labels=seq(featscales[i,"f_min"], featscales[i,"f_max"]-featscales[i,"f_binwidth"], by=featscales[i,"f_binwidth"]))))
+  df$var_bin = ifelse(df$var_bin>featscales[i,"f_cap"], featscales[i,"f_cap"], df$var_bin)
+  df$var_bin = ifelse(df[[featscales[i,"feature"]]]==featscales[i,"f_min"], featscales[i,"f_min"], df$var_bin)
+  df <- df %>% na.omit() %>% 
+    mutate(tothh_Cpoly_int = round(tothh_Cpoly*1000000,0), existdg = ICPVOF_e_kWphh_cap - ICPVOF_kWphh_cap)
+  
+  df_ft <- df %>% group_by(var_bin, IOU) %>%    # to store ci results and output as csv for later plotting
+    summarise(existdg = wtd.quantile(existdg, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              ICL = wtd.quantile(ICL_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              ICPVOF = wtd.quantile(ICPVOF_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]], 
+              ICPV = wtd.quantile(ICPV_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              #ICUGOF = wtd.quantile(ICUGOF_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]], 
+              #ICUG = wtd.quantile(ICUG_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              tothh_Cpoly = sum(tothh_Cpoly, na.rm=TRUE)) %>% as.data.frame() %>% 
+    melt(id=c("var_bin","tothh_Cpoly","IOU")) %>% na.omit() %>%
+    mutate(DER = factor(variable, levels=c("existdg","ICL","ICPVOF","ICPV")), 
+           IOU = factor(IOU, levels=c("PGE","SCE"))) %>% 
+    select(-c("variable")) %>% dplyr::rename("wtdmed"="value")
+
+for (j in c("PGE","SCE")){
+  
+  df_n <- df[,c("IOU","var_bin",featscales[i,"feature"],"tothh_Cpoly","tothh_Cpoly_int",
+              "existdg","ICL_e_kWphh_cap","ICPVOF_e_kWphh_cap","ICPV_e_kWphh_cap")] %>% filter(IOU==j)
+
+loessbt_existdg <- function(x, indices) { d <- x[indices,] 
+  d <- d %>% nest(-var_bin) %>% arrange(var_bin) %>% 
+    mutate(existdg = unlist(map(data, 
+                            ~wtd.quantile(.$existdg, probs=0.5, weight=.$tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]])),
+           tothh_Cpoly = unlist(map(data, ~sum(.$tothh_Cpoly, na.rm=TRUE))))
+  #if(length(unique(d$var_bin))!=length(unique(x$var_bin))){ missingvarbins <- setdiff(unique(x$var_bin),unique(d$var_bin))
+  #  for (vb in 1:length(missingvarbins)){ 
+  #    d <- rbind(d, mutate(nest(data.frame(var_bin=missingvarbins[vb], blanktibble),-var_bin), existdg=NA, tothh_Cpoly=NA)) }}
+  loess_fit <- loess(existdg~var_bin, d, weights=tothh_Cpoly, control=loess.control(surface="direct"),
+                     span=filter(featscales, feature==featscales[i,"feature"])[[paste0("span_",j,"_existdg")]])
+  predict(loess_fit, data.frame(var_bin=sort(unique(x$var_bin))), se=T)$fit}
+
+loessbt_ICL <- function(x, indices) { d <- x[indices,] 
+  d <- d %>% nest(-var_bin) %>% arrange(var_bin) %>% 
+    mutate(ICL = unlist(map(data, 
+                        ~wtd.quantile(.$ICL_e_kWphh_cap, probs=0.5, weight=.$tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]])),
+           tothh_Cpoly = unlist(map(data, ~sum(.$tothh_Cpoly, na.rm=TRUE))))
+  loess_fit <- loess(ICL~var_bin, d, weights=tothh_Cpoly, control=loess.control(surface="direct"),
+                     span=filter(featscales, feature==featscales[i,"feature"])[[paste0("span_",j,"_ICL")]])
+  predict(loess_fit, data.frame(var_bin=sort(unique(x$var_bin))), se=T)$fit}
+
+loessbt_ICPVOF <- function(x, indices) {d <- x[indices,] 
+  d <- d %>% nest(-var_bin) %>% arrange(var_bin) %>% 
+    mutate(ICPVOF = unlist(map(data, 
+                          ~wtd.quantile(.$ICPVOF_e_kWphh_cap, probs=0.5, weight=.$tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]])),
+           tothh_Cpoly = unlist(map(data, ~sum(.$tothh_Cpoly, na.rm=TRUE))))
+  loess_fit <- loess(ICPVOF~var_bin, d, weights=tothh_Cpoly, control=loess.control(surface="direct"),
+                     span=filter(featscales, feature==featscales[i,"feature"])[[paste0("span_",j,"_ICPVOF")]])
+  predict(loess_fit, data.frame(var_bin=sort(unique(x$var_bin))), se=T)$fit}
+
+loessbt_ICPV <- function(x, indices) {d <- x[indices,] 
+  d <- d %>% nest(-var_bin) %>% arrange(var_bin) %>% 
+    mutate(ICPV = unlist(map(data, 
+                        ~wtd.quantile(.$ICPV_e_kWphh_cap, probs=0.5, weight=.$tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]])),
+           tothh_Cpoly = unlist(map(data, ~sum(.$tothh_Cpoly, na.rm=TRUE))))
+  loess_fit <- loess(ICPV~var_bin, d, weights=tothh_Cpoly, control=loess.control(surface="direct"),
+                     span=filter(featscales, feature==featscales[i,"feature"])[[paste0("span_",j,"_ICPV")]])
+  predict(loess_fit, data.frame(var_bin=sort(unique(x$var_bin))), se=T)$fit}
+
+tic()
+bootres_existdg <- boot(data=df_n, statistic=loessbt_existdg, R=1000)
+bootres_ICL <- boot(data=df_n, statistic=loessbt_ICL, R=1000)
+bootres_ICPVOF <- boot(data=df_n, statistic=loessbt_ICPVOF, R=1000)
+bootres_ICPV <- boot(data=df_n, statistic=loessbt_ICPV, R=1000)
+toc()
+
+cidf <- data.frame(var_bin = sort(unique(df_n$var_bin))) %>% mutate(IOU=j) %>%
+  mutate(existdg_lfit = bootres_existdg$t0, ICL_lfit = bootres_ICL$t0, ICPVOF_lfit = bootres_ICPVOF$t0, ICPV_lfit = bootres_ICPV$t0)
+
+for(ci in c(.10,.25,.50,.75,.80,.85,.90,.95,1)){
+  cidf[[paste0("existdg_ci",ci*100,"l")]] <- apply(bootres_existdg$t, 2, function(x) quantile(x, (1-ci)/2))
+  cidf[[paste0("existdg_ci",ci*100,"h")]] <- apply(bootres_existdg$t, 2, function(x) quantile(x, 1-(1-ci)/2))
+  cidf[[paste0("ICL_ci",ci*100,"l")]] <- apply(bootres_ICL$t, 2, function(x) quantile(x, (1-ci)/2))
+  cidf[[paste0("ICL_ci",ci*100,"h")]] <- apply(bootres_ICL$t, 2, function(x) quantile(x, 1-(1-ci)/2))
+  cidf[[paste0("ICPVOF_ci",ci*100,"l")]] <- apply(bootres_ICPVOF$t, 2, function(x) quantile(x, (1-ci)/2))
+  cidf[[paste0("ICPVOF_ci",ci*100,"h")]] <- apply(bootres_ICPVOF$t, 2, function(x) quantile(x, 1-(1-ci)/2))
+  cidf[[paste0("ICPV_ci",ci*100,"l")]] <- apply(bootres_ICPV$t, 2, function(x) quantile(x, (1-ci)/2))
+  cidf[[paste0("ICPV_ci",ci*100,"h")]] <- apply(bootres_ICPV$t, 2, function(x) quantile(x, 1-(1-ci)/2))}
+
+cidf <- cidf %>% melt(id=c("var_bin","IOU")) %>%
+  mutate(variable=as.character(variable),
+         DER=factor(sapply(strsplit(variable, "_"), function(x) x[1]), levels=c("existdg","ICL","ICPVOF","ICPV")), 
+         ci=factor(sapply(strsplit(variable, "_"), function(x) x[2]), 
+                   levels=c("lfit","ci10l","ci10h","ci25l","ci25h","ci50l","ci50h","ci75l","ci75h",
+                            "ci80l","ci80h","ci85l","ci85h","ci90l","ci90h","ci95l","ci95h","ci100l","ci100h"))) %>%
+         #dir=factor(sapply(strsplit(variable, "_"), function(x) x[3]), levels=c("l","h"))) %>%
+  dcast(IOU+DER+var_bin~ci, value.var="value")
+  dplyr::rename("lfit"="value")
+
+df_ft <- df_ft %>% merge(cidf, by=c("IOU","DER","var_bin"), all.x=TRUE)
+}
+  
+  df_ft <- df_ft %>% 
+    mutate(variable = ifelse(!is.na(variable.x),variable.x,variable.y),
+           lfit = ifelse(!is.na(lfit.x),lfit.x,lfit.y)) %>%
+    select(-c("variable.x","lfit.x","variable.y","lfit.y"))
+  
+  write.csv(df_ft, file=paste0("figures/lowessci/",featscales[i,"f_cat"],featscales[i,"feature"],"_lfit.csv"), row.names=FALSE)
+}
+rm(ci,cidf)
+toc()
+```
+
+
+Plotting results for all variables
+
+```{r}
+plotops = list(theme_light(), theme(legend.position="bottom"), 
+               facet_grid(IOU~DER, labeller=labeller(IOU=labsIOU, DER=labsDER)),
+               scale_color_gradientn(colors=sequential_hcl(7, palette="Inferno")[1:6], 
+                                     values=c(2500,500,300,200,100,0)/2500, space="Lab", na.value="grey50", 
+                                     guide=guide_colorbar(direction="horizontal", barwidth=10, barheight=0.5, nrow=2)))
+
+plotlabs = c("Median hosting capacity (kW/hh) per bin","Households (1000s)","Median existing generation (kW/hh) per bin",
+             "Median existing generation or hosting capacity (kW/hh) per bin")
+
+#https://stackoverflow.com/questions/38925604/setting-a-unique-span-parameter-for-each-geom-smooth-on-a-multi-facet-ggplot
+
+for(i in 1:dim(featscales)[1]){
+
+df_p <- read.csv(paste0("figures/lowessci/",featscales[i,"f_cat"],featscales[i,"feature"],".csv"), 
+                        header=T, na.strings="?", colClasses=c(rep("factor",2),rep("numeric",21))) %>%
+  mutate(DER = factor(DER, levels=c("existdg","ICL","ICPVOF","ICPV")),
+         IOUDER = factor(paste0(as.character(ifelse(IOU=="PGE","PG&E","SCE"))," - ",
+                                as.character(ifelse(DER=="existdg","Existing DG", ifelse(DER=="ICL","Load",
+                                              ifelse(DER=="ICPVOF","PV, with OpFlex","PV"))))), 
+                         levels=c("PG&E - Existing DG", "PG&E - Load", "PG&E - PV, with OpFlex", "PG&E - PV",
+                                  "SCE - Existing DG", "SCE - Load", "SCE - PV, with OpFlex", "SCE - PV")))
+                 
+    ggplot(df_p, aes(x=var_bin/featscales[i,"f_div"], y=wtdmed, color=tothh_Cpoly/1000, weight=tothh_Cpoly)) + 
+      theme_light() + theme(legend.position="bottom") + facet_wrap(~IOUDER, scales="free", nrow=2) +
+    geom_ribbon(data=df_p, aes(x=var_bin/featscales[i,"f_div"], ymin=ci90l, ymax=ci90h), fill="lightsteelblue1", alpha=0.5, inherit.aes=FALSE) +
+    geom_ribbon(data=df_p, aes(x=var_bin/featscales[i,"f_div"], ymin=ci50l, ymax=ci50h), fill="lightsteelblue2", alpha=0.5, inherit.aes=FALSE) +
+    geom_smooth(data=filter(df_p, IOU=="SCE" & DER=="existdg"), method='loess', formula=y~x, se=FALSE, size=0.5,
+                span=filter(featscales, feature==featscales[i,"feature"])$span_SCE_existdg) +
+    geom_smooth(data=filter(df_p, IOU=="SCE" & DER=="ICL"), method='loess', formula=y~x, se=FALSE, size=0.5,
+                span=filter(featscales, feature==featscales[i,"feature"])$span_SCE_ICL) +
+    geom_smooth(data=filter(df_p, IOU=="SCE" & DER=="ICPVOF"), method='loess', formula=y~x, se=FALSE, size=0.5,
+                span=filter(featscales, feature==featscales[i,"feature"])$span_SCE_ICPVOF) +
+    geom_smooth(data=filter(df_p, IOU=="SCE" & DER=="ICPV"), method='loess', formula=y~x, se=FALSE, size=0.5,
+                span=filter(featscales, feature==featscales[i,"feature"])$span_SCE_ICPV) +
+    geom_smooth(data=filter(df_p, IOU=="PGE" & DER=="existdg"), method='loess', formula=y~x, se=FALSE, size=0.5,
+                span=filter(featscales, feature==featscales[i,"feature"])$span_PGE_existdg) +
+    geom_smooth(data=filter(df_p, IOU=="PGE" & DER=="ICL"), method='loess', formula=y~x, se=FALSE, size=0.5,
+                span=filter(featscales, feature==featscales[i,"feature"])$span_PGE_ICL) +
+    geom_smooth(data=filter(df_p, IOU=="PGE" & DER=="ICPVOF"), method='loess', formula=y~x, se=FALSE, size=0.5,
+                span=filter(featscales, feature==featscales[i,"feature"])$span_PGE_ICPVOF) +
+    geom_smooth(data=filter(df_p, IOU=="PGE" & DER=="ICPV"), method='loess', formula=y~x, se=FALSE, size=0.5,
+                span=filter(featscales, feature==featscales[i,"feature"])$span_PGE_ICPV) +
+    geom_point(size=1) + scale_color_gradientn(colors=sequential_hcl(7, palette="Inferno")[6:1], 
+                                               space="Lab", na.value="grey50", 
+                                               guide=guide_colorbar(direction="horizontal", barwidth=10, barheight=0.5, nrow=2)) +
+    scale_y_continuous(breaks=scales::pretty_breaks(3)) + 
+    labs(x=featscales[i,"f_xlab"], y=plotlabs[4], color=plotlabs[2], fill="Confidence intervals")
+  ggsave(paste0(featscales[i,"f_cat"],featscales[i,"feature"],".png"), path="figures/lowesscomb/", width=8, height=6.5)
+}
+```
+
+
+Refining plots manually for key variables
+--------------------------------------------------------------------------------------------
+
+Lowess plots - race (Figure 4a)
+
+```{r}
+df_p <- read.csv(paste0("figures/lowessci/",featscales[16,"f_cat"],featscales[16,"feature"],".csv"), 
+                 header=T, na.strings="?", colClasses=c(rep("factor",2),rep("numeric",21))) %>% mutate(feature="racediversity") %>%
+  merge(select(read.csv(paste0("figures/lowessci/",featscales[16,"f_cat"],featscales[16,"feature"],"_lfit.csv"), 
+                        header=T, na.strings="?", colClasses=c(rep("factor",2),rep("numeric",3),"character","numeric")),
+               -c("tothh_Cpoly","wtdmed","variable")), by=c("IOU","DER","var_bin"), all.x=TRUE)
+
+for (i in 17:20){
+df_p <- rbind(df_p, 
+              merge(mutate(read.csv(paste0("figures/lowessci/",featscales[i,"f_cat"],featscales[i,"feature"],".csv"), 
+                                    header=T, na.strings="?", colClasses=c(rep("factor",2),rep("numeric",21))),
+                           feature=featscales[i,"feature"]),
+                    select(read.csv(paste0("figures/lowessci/",featscales[i,"f_cat"],featscales[i,"feature"],"_lfit.csv"), 
+                                    header=T, na.strings="?", 
+                                    colClasses=c(rep("factor",2),rep("numeric",3),"character","numeric")),
+                           -c("tothh_Cpoly","wtdmed","variable")), 
+                    by=c("IOU","DER","var_bin"), all.x=TRUE)) }
+
+df_p <- df_p %>% mutate(DER = factor(DER, levels=lvlsDER)) %>%
+  mutate(feature = recode(factor(feature, levels=c("asian_pct","black_pct","latinx_pct","nlxwhite_pct","racediversity")), 
+                          'asian_pct'="Asian", 'black_pct'="Black", 'latinx_pct'="Latinx", 
+                          'nlxwhite_pct'="non-Latinx white", 'racediversity'="Race diversity"))
+
+plotops <- list(theme_light(), facet_grid(IOU~DER, scales="fixed", labeller=labeller(DER=labsDER,IOU=labsIOU)),
+  theme(legend.position="none", axis.title=element_blank()),
+  geom_ribbon(aes(ymin=ci90l, ymax=ci90h, fill=feature), alpha=0.3),
+  geom_ribbon(aes(ymin=ci50l, ymax=ci50h, fill=feature), alpha=0.3),
+  geom_line(aes(y=lfit, color=feature)),
+  scale_x_continuous(breaks=seq(0,100,by=20)), #scale_y_continuous(breaks=scales::pretty_breaks(3)),
+  scale_color_discrete_qualitative(palette="Dark3"), scale_fill_discrete_qualitative(palette="Dark3"),
+  labs(fill="Racial/ethnic groups", color="Racial/ethnic groups"))
+
+plotopsth <- list(theme(strip.background.y=element_blank(), strip.text.y=element_blank()))
+
+a <- ggplot(filter(df_p, DER=="existdg"), aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops + plotopsth + 
+  scale_y_continuous(breaks=seq(0,1,.2), labels=c("0","0.2","0.4","0.6","0.8","1")) + coord_cartesian(ylim=c(0,1))
+b <- ggplot(filter(df_p, DER=="ICPV"), aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops + plotopsth + 
+  scale_y_continuous(breaks=seq(0,10,2)) + coord_cartesian(ylim=c(0,10))
+c <- ggplot(filter(df_p, DER=="ICPVOF"), aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops + plotopsth + 
+  scale_y_continuous(breaks=seq(0,3,1)) + coord_cartesian(ylim=c(0,3))
+d <- ggplot(filter(df_p, DER=="ICL"), aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops + 
+  scale_y_continuous(breaks=seq(0,4,1)) + coord_cartesian(ylim=c(0,4))
+leg <- get_legend(ggplot(df_p, aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops + theme(legend.position="bottom"))
+
+g1 <- arrangeGrob(a, b, c, d, leg, 
+             ncol=4, nrow=2, layout_matrix=cbind(c(5,1), c(5,2), c(5,3), c(5,4)), 
+             widths=c(2,2,2,2), heights=c(0.5,6),
+             bottom="Population identifying as racial/ethnic group (%)", left=plotlabs[4])
+ggsave("demo_race_all.pdf", g1, path="figures/lowesscomb/", width=8, height=6.5)
+
+#ggplot(df_p, aes(x=var_bin*100, weight=tothh_Cpoly)) + 
+#  theme_light() + theme(legend.position="bottom") + facet_wrap(~IOUDER, scales="free", nrow=2) +
+#    geom_ribbon(aes(ymin=ci90l, ymax=ci90h, fill=feature), alpha=0.3) +
+#    geom_ribbon(aes(ymin=ci50l, ymax=ci50h, fill=feature), alpha=0.3) +
+#    geom_line(aes(y=lfit, color=feature)) +
+#    scale_x_continuous(breaks=seq(0,100,by=20)) + #scale_y_continuous(breaks=scales::pretty_breaks(3)) + 
+#    scale_color_discrete_qualitative(palette="Dark3") + scale_fill_discrete_qualitative(palette="Dark3") +
+#    labs(x="Population identifying as racial/ethnic group (%)", y=plotlabs[4],
+#         fill="Racial/ethnic groups", color="Racial/ethnic groups")
+#  ggsave("demo_race_all.png", path="figures/lowesscomb/", width=8, height=6.5)
+```
+
+Lowess plots - CalEnviroScreen (Figures 5a and 5b)
+
+```{r}
+df_p <- rbind(merge(mutate(read.csv(paste0("figures/lowessci/",featscales[31,"f_cat"],featscales[31,"feature"],".csv"), 
+                                    header=T, na.strings="?", colClasses=c(rep("factor",2),rep("numeric",21))),
+                           feature=featscales[31,"feature"]),
+                    select(read.csv(paste0("figures/lowessci/",featscales[31,"f_cat"],featscales[31,"feature"],"_lfit.csv"), 
+                                    header=T, na.strings="?", 
+                                    colClasses=c(rep("factor",2),rep("numeric",3),"character","numeric")),
+                           -c("tothh_Cpoly","wtdmed","variable")), 
+                    by=c("IOU","DER","var_bin"), all.x=TRUE), 
+              merge(mutate(read.csv(paste0("figures/lowessci/",featscales[32,"f_cat"],featscales[32,"feature"],".csv"), 
+                                    header=T, na.strings="?", colClasses=c(rep("factor",2),rep("numeric",21))),
+                           feature=featscales[32,"feature"]),
+                    select(read.csv(paste0("figures/lowessci/",featscales[32,"f_cat"],featscales[32,"feature"],"_lfit.csv"), 
+                                    header=T, na.strings="?", 
+                                    colClasses=c(rep("factor",2),rep("numeric",3),"character","numeric")),
+                           -c("tothh_Cpoly","wtdmed","variable")), 
+                    by=c("IOU","DER","var_bin"), all.x=TRUE)) %>%
+  mutate(DER = factor(DER, levels=lvlsDER), feature = ifelse(feature=="polenvt_pctl","Environment","Exposure"))
+
+plotops <- list(theme_light(), facet_grid(IOU~DER, scales="fixed", labeller=labeller(DER=labsDER,IOU=labsIOU)),
+  theme(legend.position="none", axis.title=element_blank()),
+  geom_ribbon(aes(ymin=ci90l, ymax=ci90h, fill=feature), alpha=0.3),
+  geom_ribbon(aes(ymin=ci50l, ymax=ci50h, fill=feature), alpha=0.3),
+  geom_point(aes(y=wtdmed, alpha=tothh_Cpoly/1000, fill=feature, shape=feature), size=1, color="black"),
+  geom_line(aes(y=lfit, color=feature)),
+  scale_shape_manual(values=c(21,22)),
+  scale_x_continuous(breaks=seq(0,100,by=20)), #scale_y_continuous(breaks=scales::pretty_breaks(3)),
+  scale_color_discrete_qualitative(palette="Dark3"), scale_fill_discrete_qualitative(palette="Dark3"),
+  labs(fill="Pollution burden", color="Pollution burden", shape="Pollution burden", alpha="Households (thousands)"))
+
+plotopsth <- list(theme(strip.background.y=element_blank(), strip.text.y=element_blank()))
+
+a <- ggplot(filter(df_p, DER=="existdg"), aes(x=var_bin, weight=tothh_Cpoly)) + plotops + plotopsth #+ 
+  #scale_y_continuous(breaks=seq(0,1,.2), labels=c("0","0.2","0.4","0.6","0.8","1")) + coord_cartesian(ylim=c(0,1))
+b <- ggplot(filter(df_p, DER=="ICPV"), aes(x=var_bin, weight=tothh_Cpoly)) + plotops + plotopsth + 
+  scale_y_continuous(breaks=seq(0,30,10)) + coord_cartesian(ylim=c(0,30))
+c <- ggplot(filter(df_p, DER=="ICPVOF"), aes(x=var_bin, weight=tothh_Cpoly)) + plotops + plotopsth #+ 
+  #scale_y_continuous(breaks=seq(0,3,1)) + coord_cartesian(ylim=c(0,3))
+d <- ggplot(filter(df_p, DER=="ICL"), aes(x=var_bin, weight=tothh_Cpoly)) + plotops #+ 
+  #scale_y_continuous(breaks=seq(0,4,1)) + coord_cartesian(ylim=c(0,4))
+leg <- get_legend(ggplot(df_p, aes(x=var_bin, weight=tothh_Cpoly)) + plotops + theme(legend.position="bottom"))
+
+g1 <- arrangeGrob(a, b, c, d, leg, 
+             ncol=4, nrow=2, layout_matrix=cbind(c(5,1), c(5,2), c(5,3), c(5,4)), 
+             widths=c(2,2,2,2), heights=c(0.5,6),
+             bottom="CalEnviroScreen pollution indicator (percentile)", left=plotlabs[4])
+ggsave("demo_ces_all_pollution.pdf", g1, path="figures/lowesscomb/", width=8, height=6.5)
+
+
+df_p <- rbind(merge(mutate(read.csv(paste0("figures/lowessci/",featscales[33,"f_cat"],featscales[33,"feature"],".csv"), 
+                                    header=T, na.strings="?", colClasses=c(rep("factor",2),rep("numeric",21))),
+                           feature=featscales[33,"feature"]),
+                    select(read.csv(paste0("figures/lowessci/",featscales[33,"f_cat"],featscales[33,"feature"],"_lfit.csv"), 
+                                    header=T, na.strings="?", 
+                                    colClasses=c(rep("factor",2),rep("numeric",3),"character","numeric")),
+                           -c("tothh_Cpoly","wtdmed","variable")), 
+                    by=c("IOU","DER","var_bin"), all.x=TRUE), 
+              merge(mutate(read.csv(paste0("figures/lowessci/",featscales[34,"f_cat"],featscales[34,"feature"],".csv"), 
+                                    header=T, na.strings="?", colClasses=c(rep("factor",2),rep("numeric",21))),
+                           feature=featscales[34,"feature"]),
+                    select(read.csv(paste0("figures/lowessci/",featscales[34,"f_cat"],featscales[34,"feature"],"_lfit.csv"), 
+                                    header=T, na.strings="?", 
+                                    colClasses=c(rep("factor",2),rep("numeric",3),"character","numeric")),
+                           -c("tothh_Cpoly","wtdmed","variable")), 
+                    by=c("IOU","DER","var_bin"), all.x=TRUE)) %>%
+  mutate(DER = factor(DER, levels=lvlsDER), feature = ifelse(feature=="popsens_pctl","Sensitive populations","Ling. isolation"))
+
+plotops <- list(theme_light(), facet_grid(IOU~DER, scales="fixed", labeller=labeller(DER=labsDER,IOU=labsIOU)),
+  theme(legend.position="none", axis.title=element_blank()),
+  geom_ribbon(aes(ymin=ci90l, ymax=ci90h, fill=feature), alpha=0.3),
+  geom_ribbon(aes(ymin=ci50l, ymax=ci50h, fill=feature), alpha=0.3),
+  geom_point(aes(y=wtdmed, alpha=tothh_Cpoly/1000, fill=feature, shape=feature), size=1, color="black"),
+  geom_line(aes(y=lfit, color=feature)),
+  scale_shape_manual(values=c(21,22)),
+  scale_x_continuous(breaks=seq(0,100,by=20)), #scale_y_continuous(breaks=scales::pretty_breaks(3)),
+  scale_color_discrete_qualitative(palette="Dark3"), scale_fill_discrete_qualitative(palette="Dark3"),
+  labs(fill="Population indicator", color="Population indicator", shape="Population indicator", alpha="Households (1000s)"))
+
+plotopsth <- list(theme(strip.background.y=element_blank(), strip.text.y=element_blank()))
+
+a <- ggplot(filter(df_p, DER=="existdg"), aes(x=var_bin, weight=tothh_Cpoly)) + plotops + plotopsth + 
+  scale_y_continuous(breaks=seq(0,1,.2), labels=c("0","0.2","0.4","0.6","0.8","1")) + coord_cartesian(ylim=c(0,1))
+b <- ggplot(filter(df_p, DER=="ICPV"), aes(x=var_bin, weight=tothh_Cpoly)) + plotops + plotopsth #+ 
+  #scale_y_continuous(breaks=seq(0,10,2)) + coord_cartesian(ylim=c(0,10))
+c <- ggplot(filter(df_p, DER=="ICPVOF"), aes(x=var_bin, weight=tothh_Cpoly)) + plotops + plotopsth + 
+  scale_y_continuous(breaks=seq(1,2,0.2), labels=c("1","1.2","1.4","1.6","1.8","2")) + coord_cartesian(ylim=c(1,2))
+d <- ggplot(filter(df_p, DER=="ICL"), aes(x=var_bin, weight=tothh_Cpoly)) + plotops #+ 
+  #scale_y_continuous(breaks=seq(0,4,1)) + coord_cartesian(ylim=c(0,4))
+leg <- get_legend(ggplot(df_p, aes(x=var_bin, weight=tothh_Cpoly)) + plotops + theme(legend.position="bottom"))
+
+g2 <- arrangeGrob(a, b, c, d, leg, 
+             ncol=4, nrow=2, layout_matrix=cbind(c(5,1), c(5,2), c(5,3), c(5,4)), 
+             widths=c(2,2,2,2), heights=c(0.5,6),
+             bottom="CalEnviroScreen population indicator (percentile)", left=plotlabs[4])
+ggsave("demo_ces_all_population.pdf", g2, path="figures/lowesscomb/", width=8, height=6.5)
+```
+
+Lowess plots - income (Figures 5c and 5d)
+
+```{r}
+df_p <- rbind(merge(mutate(read.csv(paste0("figures/lowessci/",featscales[21,"f_cat"],featscales[21,"feature"],".csv"), 
+                                    header=T, na.strings="?", colClasses=c(rep("factor",2),rep("numeric",21))),
+                           feature=featscales[21,"feature"]),
+                    select(read.csv(paste0("figures/lowessci/",featscales[21,"f_cat"],featscales[21,"feature"],"_lfit.csv"), 
+                                    header=T, na.strings="?", 
+                                    colClasses=c(rep("factor",2),rep("numeric",3),"character","numeric")),
+                           -c("tothh_Cpoly","wtdmed","variable")), 
+                    by=c("IOU","DER","var_bin"), all.x=TRUE), 
+              merge(mutate(read.csv(paste0("figures/lowessci/",featscales[22,"f_cat"],featscales[22,"feature"],".csv"), 
+                                    header=T, na.strings="?", colClasses=c(rep("factor",2),rep("numeric",21))),
+                           feature=featscales[22,"feature"]),
+                    select(read.csv(paste0("figures/lowessci/",featscales[22,"f_cat"],featscales[22,"feature"],"_lfit.csv"), 
+                                    header=T, na.strings="?", 
+                                    colClasses=c(rep("factor",2),rep("numeric",3),"character","numeric")),
+                           -c("tothh_Cpoly","wtdmed","variable")), 
+                    by=c("IOU","DER","var_bin"), all.x=TRUE)) %>%
+  mutate(DER = factor(DER, levels=lvlsDER), feature = ifelse(feature=="inc50kbelow_pct","<$50",">=$150k"))
+
+plotops <- list(theme_light(), facet_grid(IOU~DER, scales="fixed", labeller=labeller(DER=labsDER,IOU=labsIOU)),
+  theme(legend.position="none", axis.title=element_blank()),
+  geom_ribbon(aes(ymin=ci90l, ymax=ci90h, fill=feature), alpha=0.3),
+  geom_ribbon(aes(ymin=ci50l, ymax=ci50h, fill=feature), alpha=0.3),
+  geom_point(aes(y=wtdmed, alpha=tothh_Cpoly/1000, fill=feature, shape=feature), size=1, color="black"),
+  geom_line(aes(y=lfit, color=feature)),
+  scale_shape_manual(values=c(21,22)),
+  scale_x_continuous(breaks=seq(0,100,by=20)), #scale_y_continuous(breaks=scales::pretty_breaks(3)),
+  scale_color_discrete_qualitative(palette="Dark3"), scale_fill_discrete_qualitative(palette="Dark3"),
+  labs(fill="Income tier", color="Income tier", shape="Income tier", alpha="Households (thousands)"))
+
+plotopsth <- list(theme(strip.background.y=element_blank(), strip.text.y=element_blank()))
+
+a <- ggplot(filter(df_p, DER=="existdg"), aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops + plotopsth #+ 
+  #scale_y_continuous(breaks=seq(0,1,.2), labels=c("0","0.2","0.4","0.6","0.8","1")) + coord_cartesian(ylim=c(0,1))
+b <- ggplot(filter(df_p, DER=="ICPV"), aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops + plotopsth + 
+  scale_y_continuous(breaks=seq(0,16,4)) + coord_cartesian(ylim=c(-2,16))
+c <- ggplot(filter(df_p, DER=="ICPVOF"), aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops + plotopsth #+ 
+  #scale_y_continuous(breaks=seq(0,3,1)) + coord_cartesian(ylim=c(0,3))
+d <- ggplot(filter(df_p, DER=="ICL"), aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops + 
+  scale_y_continuous(breaks=seq(0,12,2)) + coord_cartesian(ylim=c(0,12))
+leg <- get_legend(ggplot(df_p, aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops + theme(legend.position="bottom"))
+
+g3 <- arrangeGrob(a, b, c, d, leg, 
+             ncol=4, nrow=2, layout_matrix=cbind(c(5,1), c(5,2), c(5,3), c(5,4)), 
+             widths=c(2,2,2,2), heights=c(0.5,6),
+             bottom="Households earning in income tier (%)", left=plotlabs[4])
+ggsave("demo_inc_all.pdf", g3, path="figures/lowesscomb/", width=8, height=6.5)
+
+df_p <- merge(mutate(read.csv(paste0("figures/lowessci/",featscales[23,"f_cat"],featscales[23,"feature"],".csv"), 
+                              header=T, na.strings="?", colClasses=c(rep("factor",2),rep("numeric",21))),
+                     feature=featscales[23,"feature"]),
+              select(read.csv(paste0("figures/lowessci/",featscales[23,"f_cat"],featscales[23,"feature"],"_lfit.csv"), 
+                              header=T, na.strings="?", 
+                              colClasses=c(rep("factor",2),rep("numeric",3),"character","numeric")),
+                     -c("tothh_Cpoly","wtdmed","variable")), by=c("IOU","DER","var_bin"), all.x=TRUE) %>%
+  mutate(DER = factor(DER, levels=lvlsDER))
+
+plotops <- list(theme_light(), facet_grid(IOU~DER, scales="fixed", labeller=labeller(DER=labsDER,IOU=labsIOU)),
+  theme(legend.position="none", axis.title=element_blank()), guides(color=FALSE, fill=FALSE),
+  geom_ribbon(aes(ymin=ci90l, ymax=ci90h, fill=feature), alpha=0.3),
+  geom_ribbon(aes(ymin=ci50l, ymax=ci50h, fill=feature), alpha=0.3),
+  geom_point(aes(y=wtdmed, alpha=tothh_Cpoly/1000, fill=feature), shape=21, size=1, color="black"),
+  geom_line(aes(y=lfit, color=feature)), scale_x_continuous(breaks=seq(0,250,by=50)),
+  scale_fill_manual(values=c(qualitative_hcl(2,palette="Dark3")[2])), 
+  scale_color_manual(values=c(qualitative_hcl(2,palette="Dark3")[2])), 
+  labs(alpha="Households (thousands)"))
+
+a <- ggplot(filter(df_p, DER=="existdg"), aes(x=var_bin/1000, weight=tothh_Cpoly)) + plotops + plotopsth #+ 
+  #scale_y_continuous(breaks=seq(0,1,.2), labels=c("0","0.2","0.4","0.6","0.8","1")) + coord_cartesian(ylim=c(0,1))
+b <- ggplot(filter(df_p, DER=="ICPV"), aes(x=var_bin/1000, weight=tothh_Cpoly)) + plotops + plotopsth #+ 
+  #scale_y_continuous(breaks=seq(0,10,2)) + coord_cartesian(ylim=c(0,10))
+c <- ggplot(filter(df_p, DER=="ICPVOF"), aes(x=var_bin/1000, weight=tothh_Cpoly)) + plotops + plotopsth #+ 
+  #scale_y_continuous(breaks=seq(0,3,1)) + coord_cartesian(ylim=c(0,3))
+d <- ggplot(filter(df_p, DER=="ICL"), aes(x=var_bin/1000, weight=tothh_Cpoly)) + plotops #+ 
+  #scale_y_continuous(breaks=seq(0,4,1)) + coord_cartesian(ylim=c(0,4))
+leg <- get_legend(ggplot(df_p, aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops + theme(legend.position="bottom"))
+
+g4 <- arrangeGrob(a, b, c, d, leg, 
+             ncol=4, nrow=2, layout_matrix=cbind(c(5,1), c(5,2), c(5,3), c(5,4)), 
+             widths=c(2,2,2,2), heights=c(0.5,6),
+             bottom="Median household income ($)", left=plotlabs[4])
+ggsave("demo_inc_medhhinc_2.pdf", g4, path="figures/lowesscomb/", width=8, height=6.5)
+
+```
+
+Lowess plots - housing types (Figures 5e and 5f)
+
+```{r}
+df_p <- rbind(merge(mutate(read.csv(paste0("figures/lowessci/",featscales[24,"f_cat"],featscales[24,"feature"],".csv"), 
+                                    header=T, na.strings="?", colClasses=c(rep("factor",2),rep("numeric",21))),
+                           feature=featscales[24,"feature"]),
+                    select(read.csv(paste0("figures/lowessci/",featscales[24,"f_cat"],featscales[24,"feature"],"_lfit.csv"), 
+                                    header=T, na.strings="?", 
+                                    colClasses=c(rep("factor",2),rep("numeric",3),"character","numeric")),
+                           -c("tothh_Cpoly","wtdmed","variable")), 
+                    by=c("IOU","DER","var_bin"), all.x=TRUE), 
+              merge(mutate(read.csv(paste0("figures/lowessci/",featscales[25,"f_cat"],featscales[25,"feature"],".csv"), 
+                                    header=T, na.strings="?", colClasses=c(rep("factor",2),rep("numeric",21))),
+                           feature=featscales[25,"feature"]),
+                    select(read.csv(paste0("figures/lowessci/",featscales[25,"f_cat"],featscales[25,"feature"],"_lfit.csv"), 
+                                    header=T, na.strings="?", 
+                                    colClasses=c(rep("factor",2),rep("numeric",3),"character","numeric")),
+                           -c("tothh_Cpoly","wtdmed","variable")), 
+                    by=c("IOU","DER","var_bin"), all.x=TRUE)) %>%
+  mutate(DER = factor(DER, levels=lvlsDER), feature = ifelse(feature=="singleunit_pct", "Single-unit", "Owner-occupied"))
+
+plotops <- list(theme_light(), facet_grid(IOU~DER, scales="fixed", labeller=labeller(DER=labsDER,IOU=labsIOU)),
+  theme(legend.position="none", axis.title=element_blank()),
+  geom_ribbon(aes(ymin=ci90l, ymax=ci90h, fill=feature), alpha=0.3),
+  geom_ribbon(aes(ymin=ci50l, ymax=ci50h, fill=feature), alpha=0.3),
+  geom_point(aes(y=wtdmed, alpha=tothh_Cpoly/1000, fill=feature, shape=feature), size=1, color="black"),
+  geom_line(aes(y=lfit, color=feature)),
+  scale_shape_manual(values=c(21,22)),
+  scale_x_continuous(breaks=seq(0,100,by=20)), #scale_y_continuous(breaks=scales::pretty_breaks(3)),
+  scale_color_discrete_qualitative(palette="Dark3"), scale_fill_discrete_qualitative(palette="Dark3"),
+  labs(fill="Feature", color="Feature", shape="Feature", alpha="Households (thousands)"))
+
+plotopsth <- list(theme(strip.background.y=element_blank(), strip.text.y=element_blank()))
+
+a <- ggplot(filter(df_p, DER=="existdg"), aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops + plotopsth + 
+  scale_y_continuous(breaks=seq(0,1,.2), labels=c("0","0.2","0.4","0.6","0.8","1")) + coord_cartesian(ylim=c(0,1))
+b <- ggplot(filter(df_p, DER=="ICPV"), aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops + plotopsth #+ 
+  #scale_y_continuous(breaks=seq(0,10,2)) + coord_cartesian(ylim=c(0,10))
+c <- ggplot(filter(df_p, DER=="ICPVOF"), aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops + plotopsth #+ 
+  #scale_y_continuous(breaks=seq(0,3,1)) + coord_cartesian(ylim=c(0,3))
+d <- ggplot(filter(df_p, DER=="ICL"), aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops #+ 
+  #scale_y_continuous(breaks=seq(0,4,1)) + coord_cartesian(ylim=c(0,4))
+leg <- get_legend(ggplot(df_p, aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops + theme(legend.position="bottom"))
+
+g5 <- arrangeGrob(a, b, c, d, leg, 
+             ncol=4, nrow=2, layout_matrix=cbind(c(5,1), c(5,2), c(5,3), c(5,4)), 
+             widths=c(2,2,2,2), heights=c(0.5,6),
+             bottom="Households (%)", left=plotlabs[4])
+ggsave("demo_hs_all.pdf", g5, path="figures/lowesscomb/", width=8, height=6.5)
+
+df_p <- merge(mutate(read.csv(paste0("figures/lowessci/",featscales[27,"f_cat"],featscales[27,"feature"],".csv"), 
+                              header=T, na.strings="?", colClasses=c(rep("factor",2),rep("numeric",21))),
+                     feature=featscales[27,"feature"]),
+              select(read.csv(paste0("figures/lowessci/",featscales[27,"f_cat"],featscales[27,"feature"],"_lfit.csv"), 
+                              header=T, na.strings="?", 
+                              colClasses=c(rep("factor",2),rep("numeric",3),"character","numeric")),
+                     -c("tothh_Cpoly","wtdmed","variable")), by=c("IOU","DER","var_bin"), all.x=TRUE) %>%
+  mutate(DER = factor(DER, levels=lvlsDER))
+
+plotops <- list(theme_light(), facet_grid(IOU~DER, scales="fixed", labeller=labeller(DER=labsDER,IOU=labsIOU)),
+  theme(legend.position="none", axis.title=element_blank()), guides(color=FALSE, fill=FALSE),
+  geom_ribbon(aes(ymin=ci90l, ymax=ci90h, fill=feature), alpha=0.3),
+  geom_ribbon(aes(ymin=ci50l, ymax=ci50h, fill=feature), alpha=0.3),
+  geom_point(aes(y=wtdmed, alpha=tothh_Cpoly/1000, fill=feature), shape=21, size=1, color="black"),
+  geom_line(aes(y=lfit, color=feature)), scale_x_continuous(breaks=seq(1940,2010,by=20)),
+  scale_fill_manual(values=c(qualitative_hcl(2,palette="Dark3")[2])), 
+  scale_color_manual(values=c(qualitative_hcl(2,palette="Dark3")[2])), 
+  labs(alpha="Households (thousands)"))
+
+a <- ggplot(filter(df_p, DER=="existdg"), aes(x=var_bin, weight=tothh_Cpoly)) + plotops + plotopsth + 
+  scale_y_continuous(breaks=seq(0,2,.5)) + coord_cartesian(ylim=c(0,2))
+b <- ggplot(filter(df_p, DER=="ICPV"), aes(x=var_bin, weight=tothh_Cpoly)) + plotops + plotopsth + 
+  scale_y_continuous(breaks=seq(0,20,4)) + coord_cartesian(ylim=c(0,20))
+c <- ggplot(filter(df_p, DER=="ICPVOF"), aes(x=var_bin, weight=tothh_Cpoly)) + plotops + plotopsth + 
+  scale_y_continuous(breaks=seq(0,3,1)) + coord_cartesian(ylim=c(0,3.6))
+d <- ggplot(filter(df_p, DER=="ICL"), aes(x=var_bin, weight=tothh_Cpoly)) + plotops #+ 
+  #scale_y_continuous(breaks=seq(0,4,1)) + coord_cartesian(ylim=c(0,4))
+leg <- get_legend(ggplot(df_p, aes(x=var_bin, weight=tothh_Cpoly)) + plotops + theme(legend.position="bottom"))
+
+g6 <- arrangeGrob(a, b, c, d, leg, 
+             ncol=4, nrow=2, layout_matrix=cbind(c(5,1), c(5,2), c(5,3), c(5,4)), 
+             widths=c(2,2,2,2), heights=c(0.5,6),
+             bottom="Median year built", left=plotlabs[4])
+ggsave("demo_hs_medyrbuilt_2.pdf", g6, path="figures/lowesscomb/", width=8, height=6.5)
+```
+
+Combined Figure 5
+
+```{r}
+plot_grid(g1, g2, g3, g4, g5, g6, nrow=3, ncol=2, scale=0.95, labels=c('a','b','c','d','e','f'), label_size=12)
+
+ggsave("figures/lowesscomb/demo_cesinchs.png", width=16, height=20)
+ggsave("figures/lowesscomb/demo_cesinchs.pdf", width=16, height=20)
+```
+
+
+
+Repeating bootstrap procedure for difference features (i.e., for difference between race variables Fig 4b)
+--------------------------------------------------------------------------------------------
+
+```{r}
+for (i in 35:40){
+  df = rbind(select(PGE_ICAalldemo, c(cols, paste0(strsplit(featscales[i,"feature"], "_")[[1]][1],"_pct"),
+                                      paste0(strsplit(featscales[i,"feature"], "_")[[1]][2],"_pct"))), 
+             select(SCE_ICAalldemo, c(cols, paste0(strsplit(featscales[i,"feature"], "_")[[1]][1],"_pct"),
+                                      paste0(strsplit(featscales[i,"feature"], "_")[[1]][2],"_pct")))) 
+  
+  df1 = df[which(!is.na(df[[paste0(strsplit(featscales[i,"feature"], "_")[[1]][1],"_pct")]])),] # first feature
+  df1$var_bin = as.numeric(as.character(cut(df1[[paste0(strsplit(featscales[i,"feature"], "_")[[1]][1],"_pct")]], 
+        breaks=seq(featscales[i,"f_min"], featscales[i,"f_max"], by=featscales[i,"f_binwidth"]), 
+        labels=seq(featscales[i,"f_min"], featscales[i,"f_max"]-featscales[i,"f_binwidth"], by=featscales[i,"f_binwidth"]))))
+  df1$var_bin = ifelse(df1$var_bin>featscales[i,"f_cap"], featscales[i,"f_cap"], df1$var_bin)
+  df1$var_bin = ifelse(df1[[paste0(strsplit(featscales[i,"feature"], "_")[[1]][1],"_pct")]]==featscales[i,"f_min"], 
+                       featscales[i,"f_min"], df1$var_bin)
+  df1 <- df1 %>% na.omit() %>% mutate(tothh_Cpoly_int = round(tothh_Cpoly*1000000,0)) %>% group_by(var_bin, IOU) %>%
+    summarise(existdg_1 = wtd.quantile(ICPVOF_e_kWphh_cap-ICPVOF_kWphh_cap, probs=0.5, 
+                                      weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              ICL_1 = wtd.quantile(ICL_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              ICPVOF_1 = wtd.quantile(ICPVOF_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]], 
+              ICPV_1 = wtd.quantile(ICPV_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              ICUGOF_1 = wtd.quantile(ICUGOF_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]], 
+              ICUG_1 = wtd.quantile(ICUG_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              tothh_Cpoly_1 = sum(tothh_Cpoly, na.rm=TRUE)) %>% as.data.frame()
+  
+  df2 = df[which(!is.na(df[[paste0(strsplit(featscales[i,"feature"], "_")[[1]][2],"_pct")]])),] # second feature
+  df2$var_bin = as.numeric(as.character(cut(df2[[paste0(strsplit(featscales[i,"feature"], "_")[[1]][2],"_pct")]], 
+        breaks=seq(featscales[i,"f_min"], featscales[i,"f_max"], by=featscales[i,"f_binwidth"]), 
+        labels=seq(featscales[i,"f_min"], featscales[i,"f_max"]-featscales[i,"f_binwidth"], by=featscales[i,"f_binwidth"]))))
+  df2$var_bin = ifelse(df2$var_bin>featscales[i,"f_cap"], featscales[i,"f_cap"], df2$var_bin)
+  df2$var_bin = ifelse(df2[[paste0(strsplit(featscales[i,"feature"], "_")[[1]][2],"_pct")]]==featscales[i,"f_min"],
+                       featscales[i,"f_min"], df2$var_bin)
+  df2 <- df2 %>% na.omit() %>% mutate(tothh_Cpoly_int = round(tothh_Cpoly*1000000,0)) %>% group_by(var_bin, IOU) %>%
+    summarise(existdg_2 = wtd.quantile(ICPVOF_e_kWphh_cap-ICPVOF_kWphh_cap, probs=0.5, 
+                                      weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              ICL_2 = wtd.quantile(ICL_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              ICPVOF_2 = wtd.quantile(ICPVOF_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]], 
+              ICPV_2 = wtd.quantile(ICPV_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              ICUGOF_2 = wtd.quantile(ICUGOF_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]], 
+              ICUG_2 = wtd.quantile(ICUG_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              tothh_Cpoly = sum(tothh_Cpoly, na.rm=TRUE)) %>% as.data.frame()
+  
+  df <- merge(df1, df2, by=c("var_bin","IOU"), all.x=TRUE) %>%
+    mutate(existdg = existdg_2-existdg_1, ICL = ICL_2-ICL_1, ICPVOF = ICPVOF_2-ICPVOF_1, ICPV = ICPV_2-ICPV_1,
+           ICUGOF = ICUGOF_2-ICUGOF_1, ICUG = ICUG_2-ICUG_1) %>% na.omit()
+  
+  for (j in c("PGE","SCE")){ df_IOU <- df %>% subset(IOU==j)
+    
+    for (k in c("existdg","ICL","ICPVOF","ICPV")){
+      lobj <- loess.as(df_IOU$var_bin, df_IOU[[k]], weights=df_IOU$tothh_Cpoly, degree=2, criterion="gcv", plot=FALSE)
+      featscales[[paste0("span_",j,"_",k)]][i] = lobj$pars$span
+    }}}
+
+rm(df_IOU, df1, df2)
+```
+
+```{r}
+tic()
+for (i in 38:40){
+
+df = rbind(select(PGE_ICAalldemo, c(cols, paste0(strsplit(featscales[i,"feature"], "_")[[1]][1],"_pct"),
+                                      paste0(strsplit(featscales[i,"feature"], "_")[[1]][2],"_pct"))), 
+           select(SCE_ICAalldemo, c(cols, paste0(strsplit(featscales[i,"feature"], "_")[[1]][1],"_pct"),
+                                      paste0(strsplit(featscales[i,"feature"], "_")[[1]][2],"_pct")))) %>% 
+  mutate(tothh_Cpoly_int = round(tothh_Cpoly*1000000,0), existdg = ICPVOF_e_kWphh_cap-ICPVOF_kWphh_cap)
+
+  df$var_bin_1 = as.numeric(as.character(cut(df[[paste0(strsplit(featscales[i,"feature"], "_")[[1]][1],"_pct")]], 
+        breaks=seq(featscales[i,"f_min"], featscales[i,"f_max"], by=featscales[i,"f_binwidth"]), 
+        labels=seq(featscales[i,"f_min"], featscales[i,"f_max"]-featscales[i,"f_binwidth"], by=featscales[i,"f_binwidth"]))))
+  df$var_bin_1 = ifelse(df$var_bin_1>featscales[i,"f_cap"], featscales[i,"f_cap"], df$var_bin_1)
+  df$var_bin_1 = ifelse(df[[paste0(strsplit(featscales[i,"feature"], "_")[[1]][1],"_pct")]]==featscales[i,"f_min"], 
+                        featscales[i,"f_min"], df$var_bin_1)
+
+  df$var_bin = as.numeric(as.character(cut(df[[paste0(strsplit(featscales[i,"feature"], "_")[[1]][2],"_pct")]], 
+        breaks=seq(featscales[i,"f_min"], featscales[i,"f_max"], by=featscales[i,"f_binwidth"]), 
+        labels=seq(featscales[i,"f_min"], featscales[i,"f_max"]-featscales[i,"f_binwidth"], by=featscales[i,"f_binwidth"]))))
+  df$var_bin = ifelse(df$var_bin>featscales[i,"f_cap"], featscales[i,"f_cap"], df$var_bin)
+  df$var_bin = ifelse(df[[paste0(strsplit(featscales[i,"feature"], "_")[[1]][2],"_pct")]]==featscales[i,"f_min"], 
+                      featscales[i,"f_min"], df$var_bin)
+  
+  df1_ft <- df[which(!is.na(df[[paste0(strsplit(featscales[i,"feature"], "_")[[1]][1],"_pct")]])),] %>% group_by(var_bin_1, IOU) %>%
+    summarise(existdg_1 = wtd.quantile(existdg, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              ICL_1 = wtd.quantile(ICL_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              ICPVOF_1 = wtd.quantile(ICPVOF_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]], 
+              ICPV_1 = wtd.quantile(ICPV_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              tothh_Cpoly_1 = sum(tothh_Cpoly, na.rm=TRUE)) %>% as.data.frame() %>%
+    dplyr::rename("var_bin"="var_bin_1")
+  
+  df2_ft <- df[which(!is.na(df[[paste0(strsplit(featscales[i,"feature"], "_")[[1]][2],"_pct")]])),] %>% group_by(var_bin, IOU) %>%
+    summarise(existdg_2 = wtd.quantile(existdg, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              ICL_2 = wtd.quantile(ICL_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              ICPVOF_2 = wtd.quantile(ICPVOF_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]], 
+              ICPV_2 = wtd.quantile(ICPV_e_kWphh_cap, probs=0.5, weight=tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]],
+              tothh_Cpoly = sum(tothh_Cpoly, na.rm=TRUE)) %>% as.data.frame()
+  
+  df_ft <- merge(df1_ft, df2_ft, by=c("var_bin","IOU"), all.x=TRUE) %>% # subtracting white from other races, etc.
+    mutate(existdg = existdg_2-existdg_1, ICL = ICL_2-ICL_1, ICPVOF = ICPVOF_2-ICPVOF_1, ICPV = ICPV_2-ICPV_1) %>%
+    select(-c("existdg_1","existdg_2","ICL_1","ICL_2","ICPVOF_1","ICPVOF_2","ICPV_1","ICPV_2","tothh_Cpoly_1")) %>%
+    melt(id=c("var_bin","tothh_Cpoly","IOU")) %>% na.omit() %>%
+    mutate(DER = factor(variable, levels=c("existdg","ICL","ICPVOF","ICPV")), 
+           IOU = factor(IOU, levels=c("PGE","SCE"))) %>% 
+    select(-c("variable")) %>% dplyr::rename("wtdmed"="value")
+
+for (j in c("PGE","SCE")){
+  
+  df_n <- df[,c("IOU", "tothh_Cpoly", "tothh_Cpoly_int",
+                "var_bin_1", paste0(strsplit(featscales[i,"feature"], "_")[[1]][1],"_pct"),
+                "var_bin", paste0(strsplit(featscales[i,"feature"], "_")[[1]][2],"_pct"),
+                "existdg","ICL_e_kWphh_cap","ICPVOF_e_kWphh_cap","ICPV_e_kWphh_cap")] %>% filter(IOU==j)
+
+loessbt_existdg <- function(x, indices) { d <- x[indices,] 
+  d1 <- d %>% na.omit() %>% nest(-var_bin_1) %>% arrange(var_bin_1) %>% 
+    mutate(existdg_1 = unlist(map(data, ~wtd.quantile(.$existdg, probs=0.5, weight=.$tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]])),
+           tothh_Cpoly_1 = unlist(map(data, ~sum(.$tothh_Cpoly, na.rm=TRUE)))) %>% dplyr::rename("var_bin"="var_bin_1")
+  d2 <- d %>% na.omit() %>% nest(-var_bin) %>% arrange(var_bin) %>%
+    mutate(existdg_2 = unlist(map(data, ~wtd.quantile(.$existdg, probs=0.5, weight=.$tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]])),
+           tothh_Cpoly = unlist(map(data, ~sum(.$tothh_Cpoly, na.rm=TRUE))))
+  dmerge <- merge(d1[,c("var_bin","existdg_1","tothh_Cpoly_1")], d2[,c("var_bin","existdg_2","tothh_Cpoly")],
+                  by=c("var_bin"), all.x=TRUE) %>% mutate(existdg = existdg_2-existdg_1) %>% na.omit()
+  loess_fit <- loess(existdg~var_bin, dmerge, weights=tothh_Cpoly, control=loess.control(surface="direct"),
+                     span=filter(featscales, feature==featscales[i,"feature"])[[paste0("span_",j,"_existdg")]])
+  predict(loess_fit, data.frame(var_bin=sort(unique(x$var_bin))), se=T)$fit}
+
+loessbt_ICL <- function(x, indices) { d <- x[indices,] 
+  d1 <- d %>% na.omit() %>% nest(-var_bin_1) %>% arrange(var_bin_1) %>% 
+    mutate(ICL_1 = unlist(map(data, ~wtd.quantile(.$ICL_e_kWphh_cap, probs=0.5, weight=.$tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]])),
+           tothh_Cpoly_1 = unlist(map(data, ~sum(.$tothh_Cpoly, na.rm=TRUE)))) %>% dplyr::rename("var_bin"="var_bin_1")
+  d2 <- d %>% na.omit() %>% nest(-var_bin) %>% arrange(var_bin) %>%
+    mutate(ICL_2 = unlist(map(data, ~wtd.quantile(.$ICL_e_kWphh_cap, probs=0.5, weight=.$tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]])),
+           tothh_Cpoly = unlist(map(data, ~sum(.$tothh_Cpoly, na.rm=TRUE))))
+  dmerge <- merge(d1[,c("var_bin","ICL_1","tothh_Cpoly_1")], d2[,c("var_bin","ICL_2","tothh_Cpoly")],
+                  by=c("var_bin"), all.x=TRUE) %>% mutate(ICL = ICL_2-ICL_1) %>% na.omit()
+  loess_fit <- loess(ICL~var_bin, dmerge, weights=tothh_Cpoly, control=loess.control(surface="direct"),
+                     span=filter(featscales, feature==featscales[i,"feature"])[[paste0("span_",j,"_ICL")]])
+  predict(loess_fit, data.frame(var_bin=sort(unique(x$var_bin))), se=T)$fit}
+
+loessbt_ICPVOF <- function(x, indices) {d <- x[indices,] 
+  d1 <- d %>% na.omit() %>% nest(-var_bin_1) %>% arrange(var_bin_1) %>% 
+    mutate(ICPVOF_1 = unlist(map(data, ~wtd.quantile(.$ICPVOF_e_kWphh_cap, probs=0.5, weight=.$tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]])),
+           tothh_Cpoly_1 = unlist(map(data, ~sum(.$tothh_Cpoly, na.rm=TRUE)))) %>% dplyr::rename("var_bin"="var_bin_1")
+  d2 <- d %>% na.omit() %>% nest(-var_bin) %>% arrange(var_bin) %>%
+    mutate(ICPVOF_2 = unlist(map(data, ~wtd.quantile(.$ICPVOF_e_kWphh_cap, probs=0.5, weight=.$tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]])),
+           tothh_Cpoly = unlist(map(data, ~sum(.$tothh_Cpoly, na.rm=TRUE))))
+  dmerge <- merge(d1[,c("var_bin","ICPVOF_1","tothh_Cpoly_1")], d2[,c("var_bin","ICPVOF_2","tothh_Cpoly")],
+                  by=c("var_bin"), all.x=TRUE) %>% mutate(ICPVOF = ICPVOF_2-ICPVOF_1) %>% na.omit()
+  loess_fit <- loess(ICPVOF~var_bin, dmerge, weights=tothh_Cpoly, control=loess.control(surface="direct"),
+                     span=filter(featscales, feature==featscales[i,"feature"])[[paste0("span_",j,"_ICPVOF")]])
+  predict(loess_fit, data.frame(var_bin=sort(unique(x$var_bin))), se=T)$fit}
+
+loessbt_ICPV <- function(x, indices) {d <- x[indices,] 
+  d1 <- d %>% na.omit() %>% nest(-var_bin_1) %>% arrange(var_bin_1) %>% 
+    mutate(ICPV_1 = unlist(map(data, ~wtd.quantile(.$ICPV_e_kWphh_cap, probs=0.5, weight=.$tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]])),
+           tothh_Cpoly_1 = unlist(map(data, ~sum(.$tothh_Cpoly, na.rm=TRUE)))) %>% dplyr::rename("var_bin"="var_bin_1")
+  d2 <- d %>% na.omit() %>% nest(-var_bin) %>% arrange(var_bin) %>%
+    mutate(ICPV_2 = unlist(map(data, ~wtd.quantile(.$ICPV_e_kWphh_cap, probs=0.5, weight=.$tothh_Cpoly_int, na.rm=TRUE, normwt=FALSE)[[1]])),
+           tothh_Cpoly = unlist(map(data, ~sum(.$tothh_Cpoly, na.rm=TRUE))))
+  dmerge <- merge(d1[,c("var_bin","ICPV_1","tothh_Cpoly_1")], d2[,c("var_bin","ICPV_2","tothh_Cpoly")],
+                  by=c("var_bin"), all.x=TRUE) %>% mutate(ICPV = ICPV_2-ICPV_1) %>% na.omit()
+  loess_fit <- loess(ICPV~var_bin, dmerge, weights=tothh_Cpoly, control=loess.control(surface="direct"),
+                     span=filter(featscales, feature==featscales[i,"feature"])[[paste0("span_",j,"_ICPV")]])
+  predict(loess_fit, data.frame(var_bin=sort(unique(x$var_bin))), se=T)$fit}
+
+tic()
+bootres_existdg <- boot(data=df_n, statistic=loessbt_existdg, R=1000)
+bootres_ICL <- boot(data=df_n, statistic=loessbt_ICL, R=1000)
+bootres_ICPVOF <- boot(data=df_n, statistic=loessbt_ICPVOF, R=1000)
+bootres_ICPV <- boot(data=df_n, statistic=loessbt_ICPV, R=1000)
+toc()
+
+cidf <- data.frame(var_bin = sort(unique(df_n$var_bin))) %>% mutate(IOU=j) %>%
+  mutate(existdg_lfit = bootres_existdg$t0, ICL_lfit = bootres_ICL$t0, ICPVOF_lfit = bootres_ICPVOF$t0, ICPV_lfit = bootres_ICPV$t0)
+
+for(ci in c(.10,.25,.50,.75,.80,.85,.90,.95,1)){
+  cidf[[paste0("existdg_ci",ci*100,"l")]] <- apply(bootres_existdg$t, 2, function(x) quantile(x, (1-ci)/2))
+  cidf[[paste0("existdg_ci",ci*100,"h")]] <- apply(bootres_existdg$t, 2, function(x) quantile(x, 1-(1-ci)/2))
+  cidf[[paste0("ICL_ci",ci*100,"l")]] <- apply(bootres_ICL$t, 2, function(x) quantile(x, (1-ci)/2))
+  cidf[[paste0("ICL_ci",ci*100,"h")]] <- apply(bootres_ICL$t, 2, function(x) quantile(x, 1-(1-ci)/2))
+  cidf[[paste0("ICPVOF_ci",ci*100,"l")]] <- apply(bootres_ICPVOF$t, 2, function(x) quantile(x, (1-ci)/2))
+  cidf[[paste0("ICPVOF_ci",ci*100,"h")]] <- apply(bootres_ICPVOF$t, 2, function(x) quantile(x, 1-(1-ci)/2))
+  cidf[[paste0("ICPV_ci",ci*100,"l")]] <- apply(bootres_ICPV$t, 2, function(x) quantile(x, (1-ci)/2))
+  cidf[[paste0("ICPV_ci",ci*100,"h")]] <- apply(bootres_ICPV$t, 2, function(x) quantile(x, 1-(1-ci)/2))}
+
+cidf <- cidf %>% melt(id=c("var_bin","IOU")) %>%
+  mutate(variable=as.character(variable),
+         DER=factor(sapply(strsplit(variable, "_"), function(x) x[1]), levels=c("existdg","ICL","ICPVOF","ICPV")), 
+         ci=factor(sapply(strsplit(variable, "_"), function(x) x[2]), 
+                   levels=c("lfit","ci10l","ci10h","ci25l","ci25h","ci50l","ci50h","ci75l","ci75h",
+                            "ci80l","ci80h","ci85l","ci85h","ci90l","ci90h","ci95l","ci95h","ci100l","ci100h"))) %>%
+  dcast(IOU+DER+var_bin~ci, value.var="value")
+
+df_ft <- df_ft %>% merge(cidf, by=c("IOU","DER","var_bin"), all.x=TRUE)
+}
+  
+  df_ft <- df_ft %>% melt(id=c("IOU","DER","var_bin","tothh_Cpoly")) %>% na.omit() %>%
+    mutate(variable = as.character(variable)) %>%
+    mutate(variable = ifelse(substr(variable,1,2)=="ci" | substr(variable,1,2)=="lf", str_sub(variable,1,-3), variable)) %>%
+    dcast(IOU+DER+var_bin+tothh_Cpoly~variable, value.var="value")
+  
+  write.csv(df_ft, file=paste0("figures/lowessci/",featscales[i,"f_cat"],"diff_",featscales[i,"feature"],".csv"), row.names=FALSE)
+}
+rm(cidf)
+toc()
+```
+
+
+Plotting results (Figure 4)
+
+```{r}
+df_p <- read.csv(paste0("figures/lowessci/",featscales[35,"f_cat"],"diff_",featscales[35,"feature"],".csv"), 
+                 header=T, na.strings="?", colClasses=c(rep("factor",2),rep("numeric",22))) %>% 
+  mutate(feature=str_sub(featscales[35,"feature"],10,-1))
+
+for (i in 36:37){
+df_p <- rbind(df_p, mutate(read.csv(paste0("figures/lowessci/",featscales[i,"f_cat"],"diff_",featscales[i,"feature"],".csv"), 
+                                    header=T, na.strings="?", colClasses=c(rep("factor",2),rep("numeric",22))),
+                           feature=str_sub(featscales[i,"feature"],10,-1)))}
+
+df_p <- df_p %>% mutate(DER = factor(DER, levels=lvlsDER)) %>%
+  mutate(feature = recode(factor(feature, levels=c("asian_pct","black_pct","latinx_pct","nlxwhite_pct","racediversity")), 
+                          'asian_pct'="Asian", 'black_pct'="Black", 'latinx_pct'="Latinx", 
+                          'nlxwhite_pct'="non-Latinx white", 'racediversity'="Race diversity"))
+
+plotops <- list(theme_light(), facet_grid(IOU~DER, scales="fixed", labeller=labeller(DER=labsDER, IOU=labsIOU)),
+  theme(legend.position="none", axis.title=element_blank()), geom_hline(yintercept=0),
+  geom_ribbon(aes(ymin=ci90l, ymax=ci90h, fill=feature), alpha=0.3),
+  geom_ribbon(aes(ymin=ci50l, ymax=ci50h, fill=feature), alpha=0.3),
+  geom_point(aes(y=wtdmed, alpha=tothh_Cpoly/1000, fill=feature, shape=feature), size=1, color="black"),
+  geom_line(aes(y=lfit, color=feature)),
+  scale_shape_manual(values=c(21,22,23)),
+  scale_x_continuous(breaks=seq(0,100,by=20)),
+  scale_fill_manual(values=c(qualitative_hcl(5,palette="Dark3")[1], qualitative_hcl(5,palette="Dark3")[2], qualitative_hcl(5,palette="Dark3")[3])), scale_color_manual(values=c(qualitative_hcl(5,palette="Dark3")[1], qualitative_hcl(5,palette="Dark3")[2], qualitative_hcl(5,palette="Dark3")[3])),
+  labs(fill="Racial/ethnic groups", color="Racial/ethnic groups", shape="Racial/ethnic groups", alpha="Households (1000s)"))
+
+plotopsth <- list(theme(strip.background.y=element_blank(), strip.text.y=element_blank()))
+
+a <- ggplot(filter(df_p, DER=="existdg"), aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops + plotopsth + 
+  scale_y_continuous(breaks=seq(-0.8,0.4,.2), labels=c("-0.8","-0.6","-0.4","-0.2","0","0.2","0.4")) + coord_cartesian(ylim=c(-0.8,0.4))
+b <- ggplot(filter(df_p, DER=="ICPV"), aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops + plotopsth #+ 
+  #scale_y_continuous(breaks=seq(0,10,2)) + coord_cartesian(ylim=c(0,10))
+c <- ggplot(filter(df_p, DER=="ICPVOF"), aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops + plotopsth #+ 
+  #scale_y_continuous(breaks=seq(0,3,1)) + coord_cartesian(ylim=c(0,3))
+d <- ggplot(filter(df_p, DER=="ICL"), aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops #+ 
+  #scale_y_continuous(breaks=seq(0,4,1)) + coord_cartesian(ylim=c(0,4))
+leg <- get_legend(ggplot(df_p, aes(x=var_bin*100, weight=tothh_Cpoly)) + plotops + theme(legend.position="bottom"))
+
+g2 <- arrangeGrob(a, b, c, d, leg, 
+             ncol=4, nrow=2, layout_matrix=cbind(c(5,1), c(5,2), c(5,3), c(5,4)), 
+             widths=c(2,2,2,2), heights=c(0.5,6),
+             bottom="Population identifying as racial/ethnic group (%)", left="Difference in median existing generation or hosting capacity (kW/hh) \n per bin from population identifying as non-Latinx white")
+
+ggsave("demo_race_diff_nlxwhite.pdf", g2, path="figures/lowesscomb/", width=8, height=6.5)
+
+plot_grid(g1, g2, labels=c('a','b'), scale=0.95, label_size=12, rel_widths=c(1,1), rel_heights=c(1,1))
+
+ggsave("figures/lowesscomb/demo_race.png", width=16, height=6.5)
+ggsave("figures/lowesscomb/demo_race.pdf", width=16, height=6.5)
+  
+
+
+df_p <- rbind(mutate(read.csv(paste0("figures/lowessci/",featscales[38,"f_cat"],"diff_",featscales[38,"feature"],".csv"), 
+                              header=T, na.strings="?", colClasses=c(rep("factor",2),rep("numeric",22))),
+                     feature=paste0(strsplit(featscales[38,"feature"], "_")[[1]][2],"_pct")),
+              mutate(read.csv(paste0("figures/lowessci/",featscales[39,"f_cat"],"diff_",featscales[39,"feature"],".csv"), 
+                              header=T, na.strings="?", colClasses=c(rep("factor",2),rep("numeric",22))),
+                     feature=paste0(strsplit(featscales[39,"feature"], "_")[[1]][2],"_pct"))) %>%
+  mutate(DER = factor(DER, levels=c("existdg","ICL","ICPVOF","ICPV")),
+         IOUDER = factor(paste0(as.character(ifelse(IOU=="PGE","PG&E","SCE"))," - ", 
+                                as.character(ifelse(DER=="existdg","Existing DG", ifelse(DER=="ICL","Load",
+                                              ifelse(DER=="ICPVOF","PV, with OpFlex","PV"))))),
+                         levels=c("PG&E - Existing DG", "PG&E - Load", "PG&E - PV, with OpFlex", "PG&E - PV",
+                                  "SCE - Existing DG", "SCE - Load", "SCE - PV, with OpFlex", "SCE - PV")))
+
+ggplot(df_p, aes(x=var_bin*100, weight=tothh_Cpoly)) + 
+  theme_light() + theme(legend.position="bottom") + facet_wrap(~IOUDER, scales="free", nrow=2) + geom_hline(yintercept=0) +
+  geom_ribbon(aes(ymin=ci90l, ymax=ci90h, fill=feature), alpha=0.3) + geom_ribbon(aes(ymin=ci50l, ymax=ci50h, fill=feature), alpha=0.3) +
+  geom_line(aes(y=lfit, color=feature)) + scale_y_continuous(breaks=scales::pretty_breaks(3)) + 
+  scale_fill_manual(values=c(qualitative_hcl(5,palette="Dark3")[1], qualitative_hcl(5,palette="Dark3")[2])) +
+  scale_color_manual(values=c(qualitative_hcl(5,palette="Dark3")[1], qualitative_hcl(5,palette="Dark3")[2])) +
+  labs(x="Population identifying as racial/ethnic group (%)", 
+       y="Difference in median existing generation or hosting capacity (kW/hh) \n per bin from population identifying as Latinx", 
+       fill="Racial/ethnic groups", color="Racial/ethnic groups")
+ggsave("demo_race_diff_latinx.png", path="figures/lowesscomb/", width=8, height=6.5)
+
+df_p <- mutate(read.csv(paste0("figures/lowessci/",featscales[40,"f_cat"],"diff_",featscales[40,"feature"],".csv"), 
+                        header=T, na.strings="?", colClasses=c(rep("factor",2),rep("numeric",22))),
+               feature=paste0(strsplit(featscales[40,"feature"], "_")[[1]][2],"_pct")) %>%
+  mutate(DER = factor(DER, levels=c("existdg","ICL","ICPVOF","ICPV")),
+         IOUDER = factor(paste0(as.character(ifelse(IOU=="PGE","PG&E","SCE"))," - ", 
+                                as.character(ifelse(DER=="existdg","Existing DG", ifelse(DER=="ICL","Load",
+                                              ifelse(DER=="ICPVOF","PV, with OpFlex","PV"))))),
+                         levels=c("PG&E - Existing DG", "PG&E - Load", "PG&E - PV, with OpFlex", "PG&E - PV",
+                                  "SCE - Existing DG", "SCE - Load", "SCE - PV, with OpFlex", "SCE - PV")))
+
+ggplot(df_p, aes(x=var_bin*100, weight=tothh_Cpoly)) + 
+  theme_light() + theme(legend.position="bottom") + facet_wrap(~IOUDER, scales="free", nrow=2) + geom_hline(yintercept=0) +
+  geom_ribbon(aes(ymin=ci90l, ymax=ci90h, fill=feature), alpha=0.3) + geom_ribbon(aes(ymin=ci50l, ymax=ci50h, fill=feature), alpha=0.3) +
+  geom_line(aes(y=lfit, color=feature)) + scale_y_continuous(breaks=scales::pretty_breaks(3)) + 
+  scale_fill_manual(values=c(qualitative_hcl(5,palette="Dark3")[2])) + scale_color_manual(values=c(qualitative_hcl(5,palette="Dark3")[2])) +
+  labs(x="Population identifying as racial/ethnic group (%)", 
+       y="Difference in median existing generation or hosting capacity (kW/hh) \n per bin from population identifying as Asian", 
+       fill="Racial/ethnic groups", color="Racial/ethnic groups")
+ggsave("demo_race_diff_asian.png", path="figures/lowesscomb/", width=8, height=6.5)
+```
+
