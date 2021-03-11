@@ -2,7 +2,7 @@
 
 This repository contains script and data files for the project titled 'Grid limits pose equity barriers for distributed energy resources'.
 
-We are in the process of uploading files to this repository.
+Additionally, we include three files here that provide results for circuit capacity per household across the utility territories of PG&E and SCE in California. These are higher-resolution versions of Figure 1a, 1b, and 1c, and show circuit capacity for PV, PV with operational flexibility limits, and load, respectively. Files: BrockwayCondeCallaway_GridLimitsforDERs_PV.pdf, BrockwayCondeCallaway_GridLimitsforDERs_PVOF.pdf, and BrockwayCondeCallaway_GridLimitsforDERs_Load.pdf.
 
 ---------------
 
